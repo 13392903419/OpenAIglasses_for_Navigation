@@ -11,6 +11,7 @@
 3. [第一个 ESP32 程序](#3-第一个-esp32-程序)
 4. [本项目中的 ESP32 代码详解](#4-本项目中的-esp32-代码详解)
 5. [常见问题与调试](#5-常见问题与调试)
+6. [本项目硬件接入实操（照做必通）](#6-本项目硬件接入实操照做必通)
 
 ---
 
@@ -447,6 +448,22 @@ void loop() {
 
 ## 4. 本项目中的 ESP32 代码详解
 
+### 4.0 重要说明：你买的板子可能和默认固件不一样
+
+本仓库 `compile/` 目录下的固件代码，当前默认更偏向“**带摄像头 + 麦克风 + 扬声器 + IMU**”的一体化硬件（例如 XIAO ESP32S3 Sense 一类）。
+
+你现在购买的硬件通常是 **AI‑Thinker ESP32‑CAM（OV2640）+ 烧录底板（带 Micro‑USB）**。两者的引脚/外设不同：
+
+- `compile/compile.ino`
+  - 适配：更偏向 **ESP32‑S3 + PDM/I2S + SPI IMU** 的组合
+  - WebSocket：`/ws/camera`（视频）、`/ws_audio`（音频）
+  - 备注：如果你是标准 ESP32‑CAM，仅靠改一个宏（例如 `CAMERA_MODEL_AI_THINKER`）通常仍然不够，代码里还有麦克风/扬声器/IMU 引脚与库依赖。
+
+- `compile/esp32cam_ws_camera_min/esp32cam_ws_camera_min.ino`
+  - 适配：**AI‑Thinker ESP32‑CAM（OV2640）**
+  - 功能：只做一件事——把 JPEG 视频帧通过 WebSocket 推到服务器 `/ws/camera`
+  - 适合你现在“先把画面连上项目”的阶段
+
 ### 4.1 代码结构
 
 项目的 ESP32 代码位于 `compile/compile.ino`，主要功能：
@@ -456,6 +473,10 @@ void loop() {
 3. **摄像头初始化**：配置和启动 OV2640 摄像头
 4. **视频流传输**：持续捕获图像并发送到服务器
 5. **IMU 数据采集**：读取 ICM42688 传感器数据（如果有）
+
+如果你使用的是常见 **ESP32‑CAM（AI‑Thinker）**，建议先使用本仓库新增的最小固件：
+
+- `compile/esp32cam_ws_camera_min/esp32cam_ws_camera_min.ino`
 
 ### 4.2 关键代码片段解析
 
@@ -487,15 +508,12 @@ void connectWiFi() {
 #### WebSocket 连接部分
 
 ```cpp
-const char* websocket_server_host = "192.168.1.100";  // 服务器 IP
-const uint16_t websocket_server_port = 8081;         // 服务器端口
+// 服务器 IP（你的电脑局域网 IP，不要填 127.0.0.1）
+static const char* SERVER_HOST = "192.168.1.100";
+static const uint16_t SERVER_PORT = 8081;
 
-WebSocketsClient webSocket;
-
-void connectWebSocket() {
-  webSocket.begin(websocket_server_host, websocket_server_port, "/ws/camera");
-  webSocket.onEvent(webSocketEvent);
-}
+// 本项目服务端接收 ESP32 摄像头的入口
+static const char* CAM_WS_PATH = "/ws/camera";
 ```
 
 **要修改的地方**：
@@ -713,6 +731,24 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
    ping 192.168.1.100  # 服务器 IP
    ```
 
+#### 问题：ESP32 显示已连上 Wi‑Fi，但服务器没有出现 `[CAMERA] ESP32 connected`
+
+**排查顺序（从最常见到最关键）**：
+1. `SERVER_HOST` 是否填了电脑的“局域网 IPv4”（例如 `192.168.x.x`），而不是 `127.0.0.1`
+2. 电脑和 ESP32 是否在同一个 2.4GHz 局域网（有些路由器会把 2.4G/5G 或访客网络隔离）
+3. Windows 防火墙是否阻止了入站 8081（第一次运行时弹窗要点允许；也可临时关闭防火墙验证）
+4. 服务器是否真的在监听 `0.0.0.0:8081`（控制台应看到 `Uvicorn running on http://0.0.0.0:8081`）
+
+#### 问题：服务器出现 `[CAMERA] ESP32 connected`，但网页没有画面
+
+**说明**：服务端 `/ws/camera` 收到的是 JPEG 二进制帧；网页端看的通常是服务端转发后的结果。
+
+**排查**：
+1. 先确认浏览器打开的是 `http://localhost:8081`
+2. 观察 ESP32 串口输出是否持续运行（是否频繁重启/掉线）
+3. 供电是否足够（ESP32‑CAM 很吃电；供电不足时常见现象：能连上但一开摄像头就重启）
+4. 尝试把固件里的 `FRAME_SIZE` 降到 `FRAMESIZE_QVGA`、`FB_COUNT` 降到 1
+
 ### 5.5 性能优化
 
 #### 问题：帧率太低
@@ -781,3 +817,119 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
 4. 根据需求定制功能
 
 **祝您学习顺利！** 🚀
+
+---
+
+## 6. 本项目硬件接入实操（照做必通）
+
+这一节是给“已经买好 ESP32‑CAM + 烧录底板/USB 线/杜邦线”的同学准备的：从 0 到 1 把 ESP32 画面送进本项目，并在网页里看到视频。
+
+> 你要达成的最终现象：
+> 1) 服务器控制台出现：`[CAMERA] ESP32 connected`
+> 2) 浏览器打开 `http://localhost:8081`，能看到实时画面（或至少能看到帧在刷新）
+
+### 6.1 确认你买的是“带摄像头的 ESP32‑CAM”
+
+你买的套装里可能同时有两块板：
+
+- **ESP32‑CAM（带 OV2640 摄像头座/排线）**：这是负责拍摄的
+- **烧录底板（带 Micro‑USB/Type‑C）**：这是把 USB 转成串口、并给 ESP32‑CAM 供电/下载用的
+
+只有“ESP32‑S 模组小开发板（带 Micro‑USB、但没有摄像头座）”是**不能直接当摄像头用**的。
+
+### 6.2 安装驱动并确认 COM 口
+
+1. 用 USB 线把“烧录底板 + ESP32‑CAM”连到电脑
+2. 打开 Windows 设备管理器 → 端口（COM 和 LPT）
+3. 正常情况下会出现一个新的 COM 口（例如 `COM5`）
+
+如果没有 COM 口：
+- 多半是缺驱动（常见 CH340 / CP210x）或 USB 线是“只充电线”
+
+### 6.3 准备 Arduino IDE 环境
+
+1. 安装 Arduino IDE 2.x
+2. 安装 ESP32 开发板支持（建议 2.0.x 系列）
+3. 安装库：打开 Arduino IDE → 库管理器，搜索并安装：
+  - `ArduinoWebsockets`
+
+### 6.4 打开并配置最小固件（推荐）
+
+打开文件：`compile/esp32cam_ws_camera_min/esp32cam_ws_camera_min.ino`
+
+把下面 3 个参数改成你自己的：
+
+1. Wi‑Fi 名称和密码（必须是 2.4GHz Wi‑Fi）
+2. `SERVER_HOST`：运行 `python app_main.py` 的那台电脑的“局域网 IPv4 地址”（不要填 127.0.0.1）
+3. `SERVER_PORT`：默认是 `8081`（与你的 FastAPI 服务一致）
+
+Windows 查看本机 IP：打开 PowerShell 输入：
+
+```powershell
+ipconfig
+```
+
+找到当前网卡的 “IPv4 地址”，形如 `192.168.x.x`。
+
+### 6.5 Arduino IDE 编译/烧录设置
+
+在 Arduino IDE 里按以下思路设置（不同版本菜单名称可能略有差异）：
+
+1. 工具 → 开发板：选择 `AI Thinker ESP32-CAM`
+2. 工具 → 端口：选择你在设备管理器里看到的 COM 口
+3. 工具 → 上传速度：先用 `115200`（更稳），熟练后再调高
+4. 如果有 PSRAM 选项：选择 `Enabled`
+
+然后点击“上传”。
+
+如果一直卡在 `Connecting...`：
+- 你的底板如果有 `BOOT/IO0` 按钮：按住 BOOT 再点上传，看到开始写入后松开
+- 如果没有按钮：把 ESP32‑CAM 的 `GPIO0` 临时接到 `GND`，再重试上传（上传完成后一定要断开）
+
+### 6.6 启动服务器并验证连通
+
+1. 在电脑上启动本项目服务：
+
+```bash
+python app_main.py
+```
+
+2. 确认控制台有类似：`Uvicorn running on http://0.0.0.0:8081`
+3. 给 ESP32‑CAM 重新上电/按复位
+4. 观察服务器控制台，正常会出现：`[CAMERA] ESP32 connected`
+
+### 6.7 打开网页看画面
+
+浏览器访问：`http://localhost:8081`
+
+说明：
+- 如果 ESP32 正常在推流，页面会开始刷新显示画面
+- 如果页面黑屏但服务器已显示 connected，优先检查：Wi‑Fi 信号/供电/是否同一局域网/防火墙放行 8081
+
+#### 6.7.1 画面很卡 / FPS 很低（例如 1 FPS）
+
+如果已经能看到画面，但特别卡顿，最常见的原因是“电脑端每帧做了重活”（例如同步录制、解码/再编码、导航推理）。可以按下面顺序优化：
+
+1) **确认后端没有开启同步录制**（开启录制会显著降低 FPS）
+- 本项目后端支持把 ESP32 视频写入 `recordings/`（AVI/WAV），这是高开销操作。
+- 现在默认关闭；如需开启再设置环境变量：
+  - Windows PowerShell：`$env:AIGLASS_SYNC_RECORD="1"; python app_main.py`
+
+2) **降低 ESP32 端的视频码率**（最有效、最稳）
+打开 `compile/esp32cam_ws_camera_min/esp32cam_ws_camera_min.ino`，建议优先改成：
+- `FRAME_SIZE = FRAMESIZE_QVGA`（320×240）
+- `JPEG_QUALITY = 20~30`（数值越大画质越差但更省流量、更流畅）
+- `TARGET_FPS = 8~12`
+
+3) **检查 Wi‑Fi 条件**
+- ESP32 只能连 2.4GHz，且 2.4G 在拥挤环境下抖动会很明显。
+- 尽量靠近路由器，避免隔墙；电脑也尽量接入同一个路由器。
+
+### 6.8（可选）要做“音频 + IMU”怎么办？
+
+目前你买的 **ESP32‑CAM 套装**通常只覆盖“摄像头视频链路”。
+
+如果你后续想把“麦克风上行（`/ws_audio`）+ 扬声器播放 + IMU 姿态（UDP 12345）”也完整跑起来：
+- 需要额外的硬件外设（I2S 麦克风、功放/喇叭、IMU 等）
+- 或者使用与 `compile/compile.ino` 目标一致的硬件平台（例如带摄像头与音频/IMU接口的 ESP32S3 方案）
+

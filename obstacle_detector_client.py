@@ -11,17 +11,20 @@ from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-# --- GPU/CPU & AMP 配置 (从 blindpath 工作流迁移而来，保持一致) ---
-DEVICE = os.getenv("AIGLASS_DEVICE", "cuda:0")
-if DEVICE.startswith("cuda") and not torch.cuda.is_available():
-    logger.warning(f"AIGLASS_DEVICE={DEVICE} 但未检测到 CUDA，将回退到 CPU")
-    DEVICE = "cpu"
-IS_CUDA = DEVICE.startswith("cuda")
+def _get_device_from_env() -> str:
+    device = os.getenv("AIGLASS_DEVICE", "cuda:0")
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        logger.warning(f"AIGLASS_DEVICE={device} 但未检测到 CUDA，将回退到 CPU")
+        device = "cpu"
+    return device
 
-AMP_POLICY = os.getenv("AIGLASS_AMP", "bf16").lower()
-if AMP_POLICY not in ("bf16", "fp16", "off"):
-    AMP_POLICY = "bf16"
-AMP_DTYPE = torch.bfloat16 if AMP_POLICY == "bf16" else (torch.float16 if AMP_POLICY == "fp16" else None)
+
+def _get_amp_from_env() -> tuple[str, torch.dtype | None]:
+    policy = os.getenv("AIGLASS_AMP", "bf16").lower().strip()
+    if policy not in ("bf16", "fp16", "off"):
+        policy = "bf16"
+    dtype = torch.bfloat16 if policy == "bf16" else (torch.float16 if policy == "fp16" else None)
+    return policy, dtype
 
 # --- GPU 并发限流 (从 blindpath 工作流迁移而来，保持一致) ---
 GPU_SLOTS = int(os.getenv("AIGLASS_GPU_SLOTS", "2"))
@@ -37,9 +40,12 @@ except Exception:
 def gpu_infer_slot():
     """统一管理 GPU 并发限流 + inference_mode + AMP autocast"""
     with _gpu_slots:
-        if IS_CUDA and AMP_POLICY != "off":
+        device = _get_device_from_env()
+        is_cuda = device.startswith("cuda")
+        amp_policy, amp_dtype = _get_amp_from_env()
+        if is_cuda and amp_policy != "off":
             # 新式接口：torch.amp.autocast(device_type='cuda', dtype=...)
-            with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=AMP_DTYPE):
+            with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
                 yield
         else:
             with torch.inference_mode():
@@ -56,16 +62,20 @@ class ObstacleDetectorClient:
             'telegraph pole', 'light pole', 'street pole', 'signpost', 'support post',
             'vertical post', 'bench', 'chair', 'potted plant', 'hydrant', 'cone', 'stone', 'box'
         ]
+        device = _get_device_from_env()
+        is_cuda = device.startswith("cuda")
+        amp_policy, amp_dtype = _get_amp_from_env()
+
         try:
             logger.info("正在加载 YOLOE 障碍物模型...")
             self.model = YOLOE(model_path)
-            self.model.to(DEVICE)
+            self.model.to(device)
             self.model.fuse()
-            logger.info(f"YOLOE 障碍物模型加载成功，使用设备: {DEVICE}")
+            logger.info(f"YOLOE 障碍物模型加载成功，使用设备: {device}")
 
             logger.info("正在为 YOLOE 预计算白名单文本特征...")
-            if IS_CUDA and AMP_DTYPE is not None:
-                with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=AMP_DTYPE):
+            if is_cuda and amp_policy != "off" and amp_dtype is not None:
+                with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=amp_dtype):
                     self.whitelist_embeddings = self.model.get_text_pe(self.WHITELIST_CLASSES)
             else:
                 self.whitelist_embeddings = self.model.get_text_pe(self.WHITELIST_CLASSES)

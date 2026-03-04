@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc  
+
+# Large model weights (keep local; do not push)
+model/*.pt
+
+# Local IDE/project files
+.idea/
+*.iml
+
+# Local runtime artifacts
+recordings/

@@ -82,12 +82,12 @@ https://www.modelscope.cn/models/archifancy/AIGlasses_for_navigation
 DASHSCOPE_API_KEY=sk-your-api-key-here
 ```
 
-获取 API Key：https://dashscope.console.aliyun.com/
+获取 API Key：https://bailian.console.aliyun.com/
 
 ### 5. 启动服务器（1 分钟）
 
 ```bash
-python app_main.py
+conda run -n openaiglasses_nav_cu118 python app_main.py
 ```
 
 看到以下输出表示成功：

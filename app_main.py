@@ -1,6 +1,13 @@
 # app_main.py
 # -*- coding: utf-8 -*-
 import os, sys, time, json, asyncio, base64, audioop
+
+# ---- .env（必须尽早加载：很多模块在 import 时就读取环境变量）----
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 from typing import Any, Dict, Optional, Tuple, List, Callable, Set, Deque
 from collections import deque
 from dataclasses import dataclass
@@ -37,17 +44,10 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
-# ---- .env ----
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
-
 # ---- DashScope ASR 基础 ----
 from dashscope import audio as dash_audio  # 若未安装，会在原项目里抛错提示
 
-API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-a9440db694924559ae4ebdc2023d2b9a")
+API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-a673b9ac8f7e4a139e1569a6320e2caa")
 if not API_KEY:
     raise RuntimeError("未设置 DASHSCOPE_API_KEY")
 
@@ -121,7 +121,7 @@ def load_navigation_models():
     global yolo_seg_model, obstacle_detector
 
     try:
-        seg_model_path = os.getenv("BLIND_PATH_MODEL", r"C:\Users\Administrator\Desktop\rebuild1002\model\yolo-seg.pt")
+        seg_model_path = os.getenv("BLIND_PATH_MODEL", r"D:\Blind_Navigation\OpenAIglasses_for_Navigation\model\yolo-seg.pt")
         #print(f"[NAVIGATION] 尝试加载模型: {seg_model_path}")
 
         if os.path.exists(seg_model_path):
@@ -154,7 +154,7 @@ def load_navigation_models():
             print(f"[NAVIGATION] 请检查文件路径是否正确")
             
         # 【修改开始】使用 ObstacleDetectorClient 替代直接的 YOLO
-        obstacle_model_path = os.getenv("OBSTACLE_MODEL", r"C:\Users\Administrator\Desktop\rebuild1002\model\yoloe-11l-seg.pt")
+        obstacle_model_path = os.getenv("OBSTACLE_MODEL", r"D:\Blind_Navigation\OpenAIglasses_for_Navigation\model\yoloe-11l-seg.pt")
         print(f"[NAVIGATION] 尝试加载障碍物检测模型: {obstacle_model_path}")
         
         if os.path.exists(obstacle_model_path):
@@ -228,14 +228,21 @@ print("[NAVIGATION] 开始加载导航模型...")
 load_navigation_models()
 print(f"[NAVIGATION] 模型加载完成 - yolo_seg_model: {yolo_seg_model is not None}")
 
-# 【新增】启动同步录制
-print("[RECORDER] 启动同步录制系统...")
-sync_recorder.start_recording()
-print("[RECORDER] 录制系统已启动，将自动保存视频和音频")
+RECORDING_ENABLED = os.getenv("AIGLASS_SYNC_RECORD", "0").strip() in ("1", "true", "True", "YES", "yes")
+
+# 【新增】启动同步录制（默认关闭；开启会显著降低FPS）
+if RECORDING_ENABLED:
+    print("[RECORDER] 启动同步录制系统... (AIGLASS_SYNC_RECORD=1)")
+    sync_recorder.start_recording()
+    print("[RECORDER] 录制系统已启动，将自动保存视频和音频")
+else:
+    print("[RECORDER] 同步录制未启用（如需开启：设置环境变量 AIGLASS_SYNC_RECORD=1）")
 
 # 【新增】注册退出处理器，确保Ctrl+C时保存录制文件
 def cleanup_on_exit():
     """程序退出时的清理工作"""
+    if not RECORDING_ENABLED:
+        return
     print("\n[SYSTEM] 正在关闭录制器...")
     try:
         sync_recorder.stop_recording()
@@ -910,11 +917,12 @@ async def ws_camera_esp(ws: WebSocket):
                 frame_counter += 1
                 
                 # 【新增】录制原始帧
-                try:
-                    sync_recorder.record_frame(data)
-                except Exception as e:
-                    if frame_counter % 100 == 0:  # 避免日志刷屏
-                        print(f"[RECORDER] 录制帧失败: {e}")
+                if RECORDING_ENABLED:
+                    try:
+                        sync_recorder.record_frame(data)
+                    except Exception as e:
+                        if frame_counter % 100 == 0:  # 避免日志刷屏
+                            print(f"[RECORDER] 录制帧失败: {e}")
                 
                 try:
                     last_frames.append((time.time(), data))
@@ -929,72 +937,61 @@ async def ws_camera_esp(ws: WebSocket):
                     state_dbg = orchestrator.get_state() if orchestrator else "N/A"
                     print(f"[NAVIGATION DEBUG] 帧:{frame_counter}, state={state_dbg}, yolomedia_running={yolomedia_running}")
                 
-                # 统一解码（添加更严格的异常处理）
-                try:
-                    arr = np.frombuffer(data, dtype=np.uint8)
-                    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    # 验证解码结果
-                    if bgr is None or bgr.size == 0:
-                        if frame_counter % 30 == 0:
-                            print(f"[JPEG] 解码失败：数据长度={len(data)}")
-                        bgr = None
-                except Exception as e:
-                    if frame_counter % 30 == 0:
-                        print(f"[JPEG] 解码异常: {e}")
-                    bgr = None
+                # 先尽快把原始 JPEG 推给浏览器（不做任何解码/再编码）
+                # 说明：如果后续要叠加可视化（导航/红绿灯），那一帧再发“处理后的JPEG”。
+                if not yolomedia_sending_frames and camera_viewers:
+                    dead = []
+                    for viewer_ws in list(camera_viewers):
+                        try:
+                            await viewer_ws.send_bytes(data)
+                        except Exception:
+                            dead.append(viewer_ws)
+                    for d in dead:
+                        camera_viewers.discard(d)
 
-                # 【托管】优先交给统领状态机（寻物未占用画面时）
-                # 【修改】找物品模式时不执行导航处理，让yolomedia接管画面
-                if orchestrator and not yolomedia_running and bgr is not None:
+                # 【托管】交给统领状态机（找物品模式时跳过，让yolomedia接管画面）
+                if orchestrator and not yolomedia_running:
                     current_state = orchestrator.get_state()
-                    
-                    # 【新增】找物品模式：不处理画面，等待yolomedia发送处理后的帧
+
+                    # 找物品模式：不做导航处理，等待yolomedia发送处理后的帧
                     if current_state == "ITEM_SEARCH":
-                        # 找物品模式下，如果yolomedia还没开始发送帧，先显示原始画面
-                        if not yolomedia_sending_frames and camera_viewers:
-                            ok, enc = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                            if ok:
-                                jpeg_data = enc.tobytes()
-                                dead = []
-                                for viewer_ws in list(camera_viewers):
-                                    try:
-                                        await viewer_ws.send_bytes(jpeg_data)
-                                    except Exception:
-                                        dead.append(viewer_ws)
-                                for d in dead:
-                                    camera_viewers.discard(d)
-                        continue  # 跳过后续的导航处理
-                    
+                        continue
+
+                    # 需要做视觉处理时才解码（避免无谓的CPU开销）
+                    try:
+                        arr = np.frombuffer(data, dtype=np.uint8)
+                        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        if bgr is None or bgr.size == 0:
+                            bgr = None
+                    except Exception:
+                        bgr = None
+
+                    if bgr is None:
+                        continue
+
                     out_img = bgr
                     try:
-                        # 【新增】检查是否在红绿灯检测模式
                         if current_state == "TRAFFIC_LIGHT_DETECTION":
-                            # 红绿灯检测模式：在主线程中直接处理，避免掉帧
                             import trafficlight_detection
                             result = trafficlight_detection.process_single_frame(bgr, ui_broadcast_callback=ui_broadcast_final)
-                            out_img = result['vis_image'] if result['vis_image'] is not None else bgr
+                            out_img = result['vis_image'] if result.get('vis_image') is not None else bgr
                         else:
-                            # 其他模式：正常的导航处理
                             res = orchestrator.process_frame(bgr)
 
-                            # 语音引导（内部已节流）
-                            # 注：omni对话时已切换到CHAT模式，不会生成导航语音
                             if res.guidance_text:
                                 try:
-                                    # 先播放语音，再广播到UI
                                     play_voice_text(res.guidance_text)
                                     await ui_broadcast_final(f"[导航] {res.guidance_text}")
                                 except Exception:
                                     pass
 
-                            # 输出图像
                             out_img = res.annotated_image if res.annotated_image is not None else bgr
                     except Exception as e:
                         if frame_counter % 100 == 0:
                             print(f"[NAV MASTER] 处理帧时出错: {e}")
 
-                    # 广播图像
-                    if camera_viewers and out_img is not None:
+                    # 如果生成了叠加图，就把叠加图再发一次（原始帧已经发过）
+                    if camera_viewers and out_img is not None and out_img is not bgr:
                         ok, enc = cv2.imencode(".jpg", out_img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                         if ok:
                             jpeg_data = enc.tobytes()
@@ -1006,29 +1003,13 @@ async def ws_camera_esp(ws: WebSocket):
                                     dead.append(viewer_ws)
                             for d in dead:
                                 camera_viewers.discard(d)
-                    # 已托管，进入下一帧
+
                     continue
 
-                # 【回退】寻物占用或者未解码成功，按原始画面回传
-                if not yolomedia_sending_frames and camera_viewers:
-                    try:
-                        if bgr is None:
-                            arr = np.frombuffer(data, dtype=np.uint8)
-                            bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                        if bgr is not None:
-                            ok, enc = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                            if ok:
-                                jpeg_data = enc.tobytes()
-                                dead = []
-                                for viewer_ws in list(camera_viewers):
-                                    try:
-                                        await viewer_ws.send_bytes(jpeg_data)
-                                    except Exception:
-                                        dead.append(viewer_ws)
-                                for ws in dead:
-                                    camera_viewers.discard(ws)
-                    except Exception as e:
-                        print(f"[CAMERA] Broadcast error: {e}")
+                # 【回退】其他情况：已经在上面直接转发了原始 JPEG，无需再次解码/编码
+                # 这里保留空分支以维持原有结构
+                if False:
+                    pass
 
             elif "type" in msg and msg["type"] in ("websocket.close", "websocket.disconnect"):
                 break
