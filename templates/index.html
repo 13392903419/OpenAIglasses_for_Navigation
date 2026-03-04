@@ -3,186 +3,331 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>ESP32 相机 + 实时语音识别 + IMU 可视化</title>
+<title>ESP32 相机 + 实时语音识别 + 定位导航</title>
+<!-- Font Awesome -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+<!-- 百度地图API - 异步加载 -->
+<script>
+  window.baiduMapReady = false;
+  window.baiduMapCallbacks = [];
+  window.onBaiduMapReady = function(cb) {
+    if (window.baiduMapReady && typeof BMap !== 'undefined') cb();
+    else window.baiduMapCallbacks.push(cb);
+  };
+  (function() {
+    var s = document.createElement('script');
+    s.type = 'text/javascript';
+    s.async = true;
+    var ak = 'kAOe1GJYmW5XZzNuwB8NfxiW71LItGUD';
+    s.src = 'https://api.map.baidu.com/api?v=3.0&ak=' + encodeURIComponent(ak) + '&callback=baiduMapInit';
+    s.onerror = function() { console.error('[地图] API加载失败'); };
+    document.head.appendChild(s);
+  })();
+  function baiduMapInit() {
+    if (typeof BMap === 'undefined') return;
+    window.baiduMapReady = true;
+    window.baiduMapCallbacks.forEach(function(cb) { try { cb(); } catch(e) { console.error(e); } });
+    window.baiduMapCallbacks = [];
+  }
+</script>
 <style>
   :root{
-    --bg:#0b0f14; --card:#121821; --text:#e6edf3; --muted:#9fb0c3;
-    --ok:#7ee787; --err:#ff8080; --line:#1f2937; --panel:rgba(18,24,33,.65);
+    --bg:#f0f6ff; --card:#e0ecf8; --text:#1e293b; --muted:#64748b;
+    --ok:#059669; --err:#dc2626; --line:#c7daf0; --panel:rgba(224,236,248,.82);
+    --primary:#0891b2; --primary-dark:#0e7490; --accent:#06b6d4;
+    --border-radius:16px; --shadow:0 8px 32px rgba(8,145,178,.08);
   }
   *{box-sizing:border-box}
   body{
-    margin:0; background:linear-gradient(180deg,#0b0f14,#0b0f14 60%,#0e1621);
+    margin:0; background:linear-gradient(180deg,#f0f6ff,#f0f6ff 60%,#e8f0fe);
     color:var(--text);
     font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Arial;
   }
 
-  /* 两栏布局 */
+  /* ========== 两栏布局 ========== */
   .app{display:grid; grid-template-columns: 1fr 700px; gap:16px; height:100vh; padding:16px}
+
+  /* ========== 左侧：上下两栏（地图 + 摄像头） ========== */
   .stage{
-    position:relative; border:1px solid var(--line); border-radius:14px;
-    background:#0a1017; box-shadow:0 10px 30px rgba(0,0,0,.25); overflow:hidden;
+    display:flex; flex-direction:column; gap:12px;
+    overflow:hidden;
   }
-  .canvas-wrap, #canvas{position:absolute; inset:0; width:100%; height:100%; display:block; background:#000; z-index:10}
 
-  /* 右上角：参数 + 日志 */
-  .tri-panels{
-    position:absolute; right:12px; top:12px; z-index:30;
-    display:grid; grid-template-columns: 1fr 1fr; gap:12px;
-    max-width:min(720px, 60vw);
+  /* 上半：地图卡片 */
+  .map-card{
+    flex:1; display:flex; flex-direction:column; min-height:0;
+    border:1px solid var(--line); border-radius:var(--border-radius);
+    background:#fff; box-shadow:var(--shadow); overflow:hidden;
   }
-  .box{
-    border:2px dashed rgba(255,255,255,.35); border-radius:12px; padding:10px;
-    background:var(--panel); backdrop-filter: blur(8px) saturate(130%);
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+
+  /* 下半：摄像头卡片 */
+  .cam-card{
+    flex:1; display:flex; flex-direction:column; min-height:0;
+    border:1px solid var(--line); border-radius:var(--border-radius);
+    background:#fff; box-shadow:var(--shadow); overflow:hidden;
   }
-  .box h4{margin:0 0 6px 0; font-size:12px; color:#ffd769}
-  .kv{display:flex; justify-content:space-between; align-items:center;
-      border-top:1px dashed rgba(255,255,255,.15); padding-top:6px; margin-top:6px; color:var(--muted); font-size:12px}
-
-  /* 左上角 IMU 浮窗 —— 宽一些 + 横向布局：左模型 / 右数据 */
-  .imu-float{
-    position:absolute; left:12px; top:12px; z-index:35;
-    width: 900px;                /* ← 加长：横向空间更大 */
-    border:2px dashed rgba(255,255,255,.35);
-    border-radius:12px;
-    background:var(--panel);
-    backdrop-filter: blur(8px) saturate(130%);
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
-    padding:10px;
+  .cam-header{
+    display:flex; align-items:center; gap:10px;
+    padding:12px 20px; border-bottom:1px solid var(--line);
+    background:linear-gradient(135deg,#f0f6ff,#e8f0fe);
   }
-  .imu-row{
-    display:grid;
-    grid-template-columns: 1.8fr 1fr;  /* ← 左更宽，右放数据 */
-    gap:12px;
-    align-items:stretch;
+  .cam-header i{color:var(--primary); font-size:18px}
+  .cam-header h2{margin:0; font-size:16px; font-weight:700; color:var(--text)}
+  .cam-body{
+    flex:1; position:relative; background:#dce8f5; min-height:0;
   }
-  #imu_view{
-    position:relative;
-    min-height: 300px;           /* ← 模型区域更高 */
-    background:#0a1017; border-radius:10px;
+  .cam-body canvas{
+    position:absolute; inset:0; width:100%; height:100%; display:block;
   }
-  #imu_hud{
-  border-radius: 10px;
-  background: rgba(18, 24, 33, 0.8);  /* 改为半透明 */
-  border: none;
-  padding: 10px;
-  overflow-y: auto;  /* 启用垂直滚动条 */
-  max-height: 100vh;  /* 设置最大高度为视口高度，自动撑满 */
-}
 
-#imu_hud::-webkit-scrollbar {
-  width: 8px;  /* 滚动条的宽度 */
-}
-
-#imu_hud::-webkit-scrollbar-thumb {
-  background-color: #2a6df4;  /* 滑块的颜色 */
-  border-radius: 4px;  /* 滑块的圆角 */
-}
-
-#imu_hud::-webkit-scrollbar-track {
-  background-color: #111a2e;  /* 滚动条轨道的颜色 */
-  border-radius: 4px;  /* 滚动条轨道的圆角 */
-}
-
-  #imu_top_status{position:absolute; top:10px; right:10px; z-index:2}
-  #imu_top_status .badge{background:rgba(0,0,0,.35); border-color:#2d3b50}
-
-  /* 角标 + 当前指令（角标在浮窗下） */
-  .badge-tag{
-    position:absolute; left:12px; top: calc(12px + 300px + 28px); z-index:20;
-    background:linear-gradient(120deg, rgba(47,134,255,.9), rgba(26,88,255,.9));
-    color:#fff; padding:6px 10px; font-weight:700; font-size:12px; border-radius:999px;
-    box-shadow:0 6px 16px rgba(47,134,255,.35)
+  /* 地图头部标题 */
+  .map-header{
+    display:flex; align-items:center; gap:10px;
+    padding:16px 20px; border-bottom:1px solid var(--line);
+    background:linear-gradient(135deg,#f0f6ff,#e8f0fe);
   }
-  .command{
-    position:absolute; left:50%; bottom:46px; transform:translateX(-50%); z-index:25;
-    display:flex; gap:10px; align-items:center; padding:12px 18px; border-radius:999px;
-    background:rgba(18,24,33,.75); border:1px solid rgba(255,255,255,.14);
-    backdrop-filter: blur(8px) saturate(140%); box-shadow:0 12px 28px rgba(0,0,0,.6)
-  }
-  .dot{width:9px; height:9px; border-radius:50%; background:#2f86ff; box-shadow:0 0 16px #2f86ff}
+  .map-header i{color:var(--primary); font-size:20px}
+  .map-header h2{margin:0; font-size:18px; font-weight:700; color:var(--text)}
 
-  /* 右侧聊天（左右气泡） */
+  /* 地图工具栏 */
+  .map-toolbar{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    padding:12px 20px; border-bottom:1px solid var(--line); background:#f8fbff;
+  }
+  .map-btn{
+    padding:9px 16px; background:#fff; border:1px solid var(--line); color:var(--text);
+    border-radius:10px; cursor:pointer; display:flex; align-items:center; gap:8px;
+    font-weight:500; font-size:13px; transition:all .2s; white-space:nowrap;
+    box-shadow:0 2px 6px rgba(8,145,178,.06);
+  }
+  .map-btn:hover{background:#e8f4ff; border-color:var(--primary); color:var(--primary)}
+  .map-btn i{font-size:13px}
+
+  .search-container{
+    display:flex; align-items:center; background:#fff; border:1px solid var(--line);
+    border-radius:10px; overflow:hidden; flex:1; min-width:180px; max-width:340px;
+    box-shadow:0 2px 6px rgba(8,145,178,.06);
+  }
+  .search-input{
+    padding:9px 14px; border:none; flex:1; outline:none; font-size:13px;
+    background:transparent; color:var(--text);
+  }
+  .search-input::placeholder{color:var(--muted)}
+  .search-btn{
+    padding:9px 14px; border:none; border-radius:0; background:var(--primary);
+    color:#fff; cursor:pointer; transition:background .2s; box-shadow:none;
+  }
+  .search-btn:hover{background:var(--primary-dark)}
+
+  .more-menu{position:relative}
+  .more-dropdown{
+    display:none; position:absolute; top:100%; right:0; margin-top:6px;
+    background:#fff; border:1px solid var(--line); border-radius:12px;
+    box-shadow:0 8px 24px rgba(8,145,178,.12); min-width:200px; z-index:50;
+    overflow:hidden;
+  }
+  .show-dropdown{display:block}
+  .dropdown-item{
+    display:flex; align-items:center; gap:10px; padding:12px 16px; width:100%;
+    border:none; background:none; text-align:left; cursor:pointer; font-size:13px;
+    color:var(--text); transition:background .15s;
+  }
+  .dropdown-item:hover{background:#f0f6ff}
+  .dropdown-item i{width:16px; text-align:center; color:var(--primary)}
+
+  /* 目的地信息面板 */
+  .destination-info{
+    margin:0; padding:12px 20px; background:#f0f9ff;
+    border-bottom:1px solid var(--line); border-left:4px solid var(--primary);
+  }
+  .destination-content{
+    display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;
+  }
+  .destination-text{display:flex; align-items:center; gap:8px; font-weight:500; font-size:14px}
+  .destination-text i{color:var(--primary)}
+  .navigation-btn{
+    background:var(--primary) !important; color:#fff !important; border-color:var(--primary) !important;
+    font-size:13px;
+  }
+  .navigation-btn:hover{background:var(--primary-dark) !important}
+
+  /* 地图容器 */
+  .map-container{
+    flex:1; min-height:300px; position:relative; background:#dce8f5;
+  }
+  #map{width:100%; height:100%}
+
+  /* 地图加载失败提示 */
+  .map-error{
+    padding:40px 30px; color:var(--err); font-size:14px;
+  }
+  .map-error h3{margin:0 0 12px 0; font-size:16px}
+  .map-error p{margin:6px 0; color:var(--muted)}
+  .map-error ol{margin:12px 0; padding-left:20px; color:var(--muted)}
+  .map-error a{color:var(--primary)}
+
+  /* 位置信息条 */
+  .location-info{
+    padding:14px 20px; background:#f8fbff; border-top:1px solid var(--line);
+  }
+  .location-item{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:6px 0; font-size:14px;
+  }
+  .location-item + .location-item{border-top:1px solid rgba(199,218,240,.5)}
+  .location-item span:first-child{color:var(--muted); font-weight:500}
+  .location-item span:last-child{font-weight:600; color:var(--text)}
+
+  /* 盲道列表 */
+  .blindway-list{
+    max-height:200px; overflow-y:auto; padding:14px 20px;
+    background:#f8fbff; border-top:1px solid var(--line);
+  }
+  .blindway-list h4{margin:0 0 10px 0; font-size:14px; color:var(--text)}
+  .blindway-item{
+    background:#fff; border-radius:10px; padding:10px 14px; margin-bottom:8px;
+    display:flex; justify-content:space-between; align-items:center;
+    border-left:4px solid var(--primary); cursor:pointer; transition:all .2s;
+    box-shadow:0 2px 6px rgba(8,145,178,.04);
+  }
+  .blindway-item:hover{transform:translateX(4px); box-shadow:0 4px 12px rgba(8,145,178,.1)}
+  .blindway-name{font-weight:500; font-size:13px}
+  .blindway-distance{color:var(--primary); font-weight:700; font-size:13px}
+
+  /* ========== 右侧聊天 ========== */
   .chat {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    background: var(--card);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-    overflow: hidden;
-    height: 100vh; /* 确保 .chat 容器占据整个视口高度 */
+    display:flex; flex-direction:column;
+    border:1px solid var(--line); border-radius:var(--border-radius);
+    background:var(--card); box-shadow:var(--shadow); overflow:hidden; height:100vh;
   }
-
   .chat-head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line)}
   .badges{display:flex;gap:10px;flex-wrap:wrap}
-  .badge{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid #2d3b50;color:var(--muted)}
+  .badge{font-size:12px;padding:4px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:rgba(240,246,255,.6)}
   .ok{color:var(--ok);border-color:var(--ok)} .err{color:var(--err);border-color:var(--err)}
-  .chat-list {
-    flex: 1;
-    overflow: auto;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    min-height: 0; /* 确保 .chat-list 不会被外部内容撑大 */
-  }
+  .chat-list{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:0}
 
-  .live{padding:12px;border:1px dashed #2d3b50;border-radius:12px;background:#0c121a}
+  .live{padding:12px;border:1px dashed var(--line);border-radius:var(--border-radius);background:#dce8f5}
   .live h2{margin:0 0 8px 0;font-size:14px;color:var(--muted);font-weight:600}
   .partial{font-size:20px;min-height:2.2em;letter-spacing:.2px}
 
-  .finals {
-    padding: 12px;
-    border: 1px solid #1f2937;
-    border-radius: 12px;
-    background: #0c121a;
-    display: flex;
-    flex-direction: column;
-    flex: 1; /* 使用 flex: 1 而不是 flex-grow: 1 */
-    min-height: 0; /* 允许收缩到小于内容高度 */
+  .finals{
+    padding:12px; border:1px solid var(--line); border-radius:var(--border-radius);
+    background:#dce8f5; display:flex; flex-direction:column; flex:1; min-height:0;
   }
   .finals h2{margin:0 0 8px 0;font-size:14px;color:var(--muted);font-weight:600}
   .finals ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
-  .bubble{max-width:82%; padding:10px 12px; border-radius:14px; border:1px solid #1f2937}
-  .from-bot{align-self:flex-start; background:#0d1729}
-  .from-me {align-self:flex-end;   background:#12263a}
+  .bubble{max-width:82%;padding:10px 12px;border-radius:var(--border-radius);border:1px solid var(--line)}
+  .from-bot{align-self:flex-start;background:#cde0f5}
+  .from-me{align-self:flex-end;background:#b8d8f0}
 
   .controls{display:flex;gap:8px}
-  button{background:#1f6feb;border:1px solid #1f6feb;color:#fff;border-radius:10px;padding:8px 12px;font-weight:600;cursor:pointer}
-  .ghost{background:transparent;border-color:#304057;color:#9fb0c3}
+  button{background:var(--primary);border:1px solid var(--primary);color:#fff;border-radius:12px;padding:8px 12px;font-weight:600;cursor:pointer;transition:background .2s}
+  button:hover{background:var(--primary-dark)}
+  .ghost{background:transparent;border-color:var(--line);color:var(--muted)}
 
-  /* 隐藏但保留：校准/滑杆（供 main.js 使用） */
   .hidden-controls{display:none}
 
   @media (max-width:1100px){
     .app{grid-template-columns:1fr; height:auto}
+    .stage{height:60vh}
     .chat{height:60vh}
+    .map-toolbar{flex-wrap:wrap}
   }
 </style>
 </head>
 <body>
 
 <div class="app">
-  <!-- 左侧主舞台 -->
+  <!-- 左侧：地图 + 摄像头 -->
   <section class="stage">
-    <div class="canvas-wrap"><canvas id="canvas"></canvas></div>
+   <!-- ===== 上半：地图 ===== -->
+   <div class="map-card">
+    <!-- 标题栏 -->
+    <div class="map-header">
+      <i class="fas fa-map-marker-alt"></i>
+      <h2>定位导航</h2>
+    </div>
 
-    <!-- 左上角：IMU 浮窗（横向） -->
-    <div class="imu-float">
-      <div class="imu-row">
-        <div id="imu_view"></div>
-        <div id="imu_hud"><!-- JS 会把“IMU 实时数据面板”插到这里 --></div>
+    <!-- 工具栏 -->
+    <div class="map-toolbar">
+      <button class="map-btn" onclick="locateMe()">
+        <i class="fas fa-crosshairs"></i> 定位我的位置
+      </button>
+      <div class="search-container">
+        <input type="text" id="destinationInput" placeholder="输入目的地..." class="search-input">
+        <button class="search-btn" onclick="searchDestination()">
+          <i class="fas fa-search"></i>
+        </button>
       </div>
-      <div id="imu_top_status" style="display: none;">
-        <span class="badge">UDP: <code>12345</code></span>
-        <span class="badge">Browser WS: <code>/ws</code></span>
-        <span class="badge" id="imu_ws_state">connecting…</span>
+      <div class="more-menu">
+        <button class="map-btn" onclick="toggleMoreMenu()">
+          <i class="fas fa-ellipsis-h"></i> 更多
+        </button>
+        <div class="more-dropdown" id="moreDropdown">
+          <button class="dropdown-item" onclick="enableManualStartLocation()">
+            <i class="fas fa-map-pin"></i> 手动选择当前位置
+          </button>
+          <button class="dropdown-item" onclick="enableManualDestination()">
+            <i class="fas fa-map-marker-alt"></i> 手动选择目的地
+          </button>
+          <button class="dropdown-item" onclick="planRoute()">
+            <i class="fas fa-directions"></i> 规划路线
+          </button>
+          <button class="dropdown-item" onclick="showNearbyBlindways()">
+            <i class="fas fa-route"></i> 查找周边盲道
+          </button>
+        </div>
       </div>
     </div>
 
+    <!-- 目的地信息面板（默认隐藏） -->
+    <div class="destination-info" id="destinationInfoPanel" style="display:none;">
+      <div class="destination-content">
+        <div class="destination-text">
+          <i class="fas fa-map-marker-alt"></i>
+          <span>您的目的地是：</span>
+          <span id="destinationName">未设置</span>
+        </div>
+        <button class="map-btn navigation-btn" onclick="startNavigation()">
+          <i class="fas fa-location-arrow"></i> 定位并开始导航
+        </button>
+      </div>
+    </div>
 
+    <!-- 地图容器 -->
+    <div class="map-container">
+      <div id="map"></div>
+    </div>
 
+    <!-- 位置信息 -->
+    <div class="location-info">
+      <div class="location-item">
+        <span>当前位置：</span>
+        <span id="currentAddress">等待定位...</span>
+      </div>
+      <div class="location-item">
+        <span>距离最近盲道：</span>
+        <span id="nearestBlindway">未知</span>
+      </div>
+    </div>
+
+    <!-- 盲道列表（默认隐藏） -->
+    <div class="blindway-list" id="blindwayList" style="display:none;">
+      <h4>附近盲道</h4>
+      <div id="blindwayItems"></div>
+    </div>
+   </div>
+
+   <!-- ===== 下半：摄像头画面 ===== -->
+   <div class="cam-card">
+    <div class="cam-header">
+      <i class="fas fa-video"></i>
+      <h2>摄像头画面</h2>
+    </div>
+    <div class="cam-body">
+      <canvas id="canvas"></canvas>
+    </div>
+   </div>
   </section>
 
   <!-- 右侧聊天 -->
@@ -232,6 +377,140 @@
   <input id="ay_sl" type="range"><span id="ay_val"></span>
   <input id="az_sl" type="range"><span id="az_val"></span>
 </div>
+
+<!-- 地图初始化 + 功能占位脚本 -->
+<script>
+  // ========== 地图变量 ==========
+  let map, marker, currentPosition;
+  let nearbyBlindwayMarkers = [];
+  let nearbyBlindwayPolylines = [];
+  let destinationPoint = null;
+  let routePolyline = null;
+  let destinationMarker = null;
+
+  // ========== 地图初始化 ==========
+  function initMap() {
+    if (typeof BMap === 'undefined') {
+      document.getElementById('map').innerHTML =
+        '<div class="map-error">' +
+        '<h3>地图加载失败</h3>' +
+        '<p>百度地图 SDK 内部配置异常（coordType 为 null）。这表示 AK 未在百度地图控制台中为当前域名授权。</p>' +
+        '<p><strong>解决方案：</strong></p>' +
+        '<ol>' +
+        '<li>访问 <a href="https://lbsyun.baidu.com/apiconsole/key" target="_blank">https://lbsyun.baidu.com/apiconsole/key</a></li>' +
+        '<li>找到你的应用和 API Key</li>' +
+        '<li>点击"编辑"，在"应用授权"中添加当前域名的白名单，例如 http://localhost:5000</li>' +
+        '<li>刷新页面重试</li>' +
+        '</ol></div>';
+      return;
+    }
+    map = new BMap.Map('map');
+    map.centerAndZoom(new BMap.Point(121.473701, 31.230416), 15);
+    map.enableScrollWheelZoom(true);
+    map.addControl(new BMap.NavigationControl());
+    map.addControl(new BMap.ScaleControl());
+    console.log('[地图] 初始化完成');
+  }
+
+  // ========== 定位功能 ==========
+  function locateMe() {
+    if (!map) { console.warn('地图未初始化'); return; }
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        function(pos) {
+          var point = new BMap.Point(pos.coords.longitude, pos.coords.latitude);
+          var convertor = new BMap.Convertor();
+          convertor.translate([point], 1, 5, function(data) {
+            if (data.status === 0 && data.points.length > 0) {
+              updateMapPosition(data.points[0]);
+            } else {
+              updateMapPosition(point);
+            }
+          });
+        },
+        function(err) {
+          console.warn('浏览器定位失败，尝试百度定位', err);
+          tryBaiduGeolocation();
+        },
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    } else {
+      tryBaiduGeolocation();
+    }
+  }
+
+  function tryBaiduGeolocation() {
+    if (typeof BMap === 'undefined') return;
+    var geo = new BMap.Geolocation();
+    geo.getCurrentPosition(function(r) {
+      if (this.getStatus() === 0) {
+        updateMapPosition(r.point);
+      } else {
+        document.getElementById('currentAddress').textContent = '定位失败';
+      }
+    });
+  }
+
+  function updateMapPosition(point) {
+    currentPosition = point;
+    map.centerAndZoom(point, 17);
+    if (marker) map.removeOverlay(marker);
+    marker = new BMap.Marker(point);
+    map.addOverlay(marker);
+    var geocoder = new BMap.Geocoder();
+    geocoder.getLocation(point, function(result) {
+      if (result) {
+        document.getElementById('currentAddress').textContent = result.address || '未知地址';
+      }
+    });
+  }
+
+  // ========== 搜索目的地 ==========
+  function searchDestination() {
+    var keyword = document.getElementById('destinationInput').value.trim();
+    if (!keyword) return;
+    if (typeof BMap === 'undefined') return;
+    var local = new BMap.LocalSearch(map, {
+      onSearchComplete: function(results) {
+        if (local.getStatus() === 0 && results.getCurrentNumPois() > 0) {
+          var poi = results.getPoi(0);
+          destinationPoint = poi.point;
+          if (destinationMarker) map.removeOverlay(destinationMarker);
+          destinationMarker = new BMap.Marker(poi.point, {
+            icon: new BMap.Icon('https://api.map.baidu.com/images/marker_red.png', new BMap.Size(23, 25))
+          });
+          map.addOverlay(destinationMarker);
+          map.panTo(poi.point);
+          document.getElementById('destinationName').textContent = poi.title || keyword;
+          document.getElementById('destinationInfoPanel').style.display = '';
+        }
+      }
+    });
+    local.search(keyword);
+  }
+
+  // ========== 更多菜单 ==========
+  function toggleMoreMenu() {
+    document.getElementById('moreDropdown').classList.toggle('show-dropdown');
+  }
+  window.addEventListener('click', function(e) {
+    if (!e.target.closest('.more-menu')) {
+      document.getElementById('moreDropdown').classList.remove('show-dropdown');
+    }
+  });
+
+  // ========== 占位函数（后续实现API接入） ==========
+  function enableManualStartLocation() { console.log('TODO: 手动选择当前位置'); toggleMoreMenu(); }
+  function enableManualDestination() { console.log('TODO: 手动选择目的地'); toggleMoreMenu(); }
+  function planRoute() { console.log('TODO: 规划路线'); toggleMoreMenu(); }
+  function showNearbyBlindways() { console.log('TODO: 查找周边盲道'); toggleMoreMenu(); }
+  function startNavigation() { console.log('TODO: 开始导航'); }
+
+  // ========== 页面加载时初始化地图 ==========
+  window.addEventListener('load', function() {
+    window.onBaiduMapReady(initMap);
+  });
+</script>
 
 <!-- three.js importmap -->
 <script type="importmap">{

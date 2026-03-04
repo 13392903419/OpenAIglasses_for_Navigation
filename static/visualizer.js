@@ -6,18 +6,18 @@ class TechVisualizer {
         this.ws = null;
         this.data = {};
         
-        // 科技感配色方案
+        // 清爽蓝白配色方案
         this.colors = {
-            primary: '#00D9FF',      // 青蓝色
-            secondary: '#FF00FF',    // 品红/紫色
-            accent: '#00FF88',       // 青绿色
-            warning: '#FFAA00',      // 橙色
-            background: '#000000',   // 黑色
-            surface: '#0A0A0A',      // 深灰
-            text: '#FFFFFF',         // 白色
-            textMuted: '#888888',    // 灰色
-            grid: '#1A1A1A',         // 网格色
-            glow: '#00D9FF55'        // 发光效果
+            primary: '#0891b2',      // 青蓝色
+            secondary: '#0e7490',    // 深青蓝
+            accent: '#06b6d4',       // 亮青色
+            warning: '#d97706',      // 橙色
+            background: '#f0f6ff',   // 淡蓝白底
+            surface: '#e0ecf8',      // 浅蓝卡片
+            text: '#1e293b',         // 深色文字
+            textMuted: '#64748b',    // 灰色
+            grid: '#c7daf0',         // 网格色
+            glow: '#0891b233'        // 发光效果
         };
         
         // 字体设置

@@ -67,6 +67,37 @@ def _normalize_cn(s: str) -> str:
         s = (s or "").strip().lower()
     return s
 
+# ====== 唤醒词 / 休眠词配置 ======
+WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "1") == "1"
+
+# "小慧" 的常见 ASR 误识别变体（同音 / 近音字，覆盖 xiǎo huì/huī/huí）
+_XIAOHUI_VARIANTS = frozenset({
+    "小慧", "小会", "小辉", "小惠", "小卉", "小灰",
+    "小回", "小汇", "小绘", "小晖", "小蕙", "小珲",
+    "小荟", "小彗",
+})
+WAKE_ACTION  = "启动"
+SLEEP_ACTION = "结束"
+
+def _has_wake_or_sleep(text: str):
+    """
+    检测文本是否包含唤醒词或休眠词。
+    匹配规则：文本中同时包含 "小慧" 的任意变体 + "启动"/"结束"。
+    返回: ("wake"|"sleep", True)  或  (None, False)
+    """
+    t = _normalize_cn(text)
+    if not t:
+        return None, False
+    # 检查是否包含至少一个 "小X" 变体
+    has_name = any(_normalize_cn(v) in t for v in _XIAOHUI_VARIANTS)
+    if not has_name:
+        return None, False
+    if WAKE_ACTION in t:
+        return "wake", True
+    if SLEEP_ACTION in t:
+        return "sleep", True
+    return None, False
+
 # ============ ASR 全局总闸 ============
 _current_recognition: Optional[object] = None
 _rec_lock = asyncio.Lock()
@@ -106,6 +137,7 @@ class ASRCallback:
         start_ai_with_text_fn,               # async (text)
         full_system_reset_fn,                 # async (reason)
         interrupt_lock: asyncio.Lock,
+        play_voice_fn=None,                   # 可选：播放预录语音 (text)->None
     ):
         self._on_sdk_error = on_sdk_error
         self._post = post
@@ -119,6 +151,11 @@ class ASRCallback:
         self._start_ai   = start_ai_with_text_fn
         self._full_reset = full_system_reset_fn
         self._interrupt_lock = interrupt_lock
+
+        # ---- 唤醒词状态 ----
+        self._play_voice = play_voice_fn
+        self._system_active: bool = not WAKE_WORD_ENABLED   # 禁用唤醒词时默认激活
+        self._wake_consumed: bool = False                   # 当前句子是否被唤醒/休眠词占用
 
     def on_open(self):  pass
     def on_close(self): pass
@@ -156,6 +193,60 @@ class ASRCallback:
         text = text.strip()
         if not text:
             return
+
+        # ---------- ⓪ 唤醒词 / 休眠词检测（最高优先级）----------
+        if WAKE_WORD_ENABLED:
+            wtype, matched = _has_wake_or_sleep(text)
+
+            if matched or self._wake_consumed:
+                # 首次命中：执行状态切换
+                if matched and not self._wake_consumed:
+                    self._wake_consumed = True
+                    if wtype == "wake" and not self._system_active:
+                        self._system_active = True
+                        print(f"[WAKE] 唤醒词命中: '{text}' -> 系统已激活", flush=True)
+                        if self._play_voice:
+                            self._play_voice("小慧已启动，请说出您的需求。")
+                        try:
+                            self._post(self._ui_partial("✅ 小慧已启动，请说出您的需求"))
+                        except Exception:
+                            pass
+                    elif wtype == "sleep" and self._system_active:
+                        self._system_active = False
+                        print(f"[WAKE] 休眠词命中: '{text}' -> 系统已休眠", flush=True)
+                        if self._play_voice:
+                            self._play_voice("小慧已关闭。")
+                        try:
+                            self._post(self._ui_partial("💤 小慧已休眠"))
+                        except Exception:
+                            pass
+                        # 休眠时触发全清零（停播 + 取消 AI 任务）
+                        async def _sleep_reset():
+                            async with self._interrupt_lock:
+                                await self._full_reset("Wake word: sleep")
+                        try:
+                            self._post(_sleep_reset())
+                        except Exception:
+                            pass
+                    # else: 已激活时再说启动 / 已休眠时再说结束 → 静默吞掉
+
+                # 整句吞掉，不送 LLM；句尾时复位 per-sentence 状态
+                if is_end is True:
+                    self._wake_consumed = False
+                    self._last_partial_for_ui = ""
+                    self._last_final_text = ""
+                    self._hot_interrupted = False
+                return
+
+            # 休眠状态：丢弃所有语音，不送 LLM
+            if not self._system_active:
+                if is_end is True:
+                    print(f"[DORMANT] 丢弃: '{_shorten(text)}'", flush=True)
+                    try:
+                        self._post(self._ui_partial('💤 休眠中 - 请说"小慧小慧，启动"'))
+                    except Exception:
+                        pass
+                return
 
         # ---------- ① 热词优先：命中就全清零并短路，绝不送 LLM ----------
         if not self._hot_interrupted and self._has_hotword(text):

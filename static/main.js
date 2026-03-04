@@ -10,7 +10,7 @@
   const $btnRe     = document.getElementById('btnReconnect');
   const $fps       = document.getElementById('fps');
   const canvas     = document.getElementById('canvas');
-  const ctx        = canvas.getContext('2d');
+  const ctx        = canvas ? canvas.getContext('2d') : null;
 
   // === 获取/创建聊天容器（关键补丁） ===
   let chatContainer = document.getElementById('chatContainer');
@@ -52,12 +52,12 @@
       #chatContainer{
         position: relative !important;
         overflow-y: auto !important;
-        flex: 1 !important;  /* 改为使用 flex: 1 占满剩余空间 */
-        min-height: 0 !important;  /* 确保 flex 子元素能正确收缩 */
+        flex: 1 !important;
+        min-height: 0 !important;
         padding: 12px 12px 4px !important;
-        background: #0b1020 !important;
-        border: 1px solid #1d2438 !important;
-        border-radius: 10px !important;
+        background: #e8f0fe !important;
+        border: 1px solid #c7daf0 !important;
+        border-radius: 16px !important;
         margin-top: 12px !important;
       }
       
@@ -67,29 +67,29 @@
       }
       
       #chatContainer::-webkit-scrollbar-track {
-        background: #0d1420 !important;
+        background: #dce8f5 !important;
         border-radius: 4px !important;
       }
       
       #chatContainer::-webkit-scrollbar-thumb {
-        background: #2a3446 !important;
+        background: #0891b2 !important;
         border-radius: 4px !important;
         transition: background 0.2s !important;
       }
       
       #chatContainer::-webkit-scrollbar-thumb:hover {
-        background: #3a4556 !important;
+        background: #0e7490 !important;
       }
       
       /* Firefox 滚动条 */
       #chatContainer {
         scrollbar-width: thin !important;
-        scrollbar-color: #2a3446 #0d1420 !important;
+        scrollbar-color: #0891b2 #dce8f5 !important;
       }
       .timestamp{
         text-align:center !important;
         font-size:12px !important;
-        color:#8a93a5 !important;
+        color:#64748b !important;
         margin:10px 0 !important;
         user-select:none !important;
       }
@@ -104,10 +104,10 @@
 
       .avatar{
         width:28px !important; height:28px !important; border-radius:50% !important;
-        background:#232a3d !important; flex:0 0 28px !important;
+        background:#dce8f5 !important; flex:0 0 28px !important;
         display:flex !important; align-items:center !important; justify-content:center !important;
-        color:#9fb0c3 !important; font-size:12px !important; user-select:none !important;
-        border:1px solid #29314a !important;
+        color:#64748b !important; font-size:12px !important; user-select:none !important;
+        border:1px solid #c7daf0 !important;
       }
       .message.user .avatar{ display:none !important; }
 
@@ -123,15 +123,15 @@
         font-size:14px !important;
       }
       .message.ai .bubble{
-        background:#111a2e !important;
-        color:#e6edf3 !important;
-        border-color:#1e2740 !important;
+        background:#e0ecf8 !important;
+        color:#1e293b !important;
+        border-color:#c7daf0 !important;
         border-top-left-radius:6px !important;
       }
       .message.user .bubble{
-        background:#2a6df4 !important;
+        background:#0891b2 !important;
         color:#fff !important;
-        border-color:#2a6df4 !important;
+        border-color:#0891b2 !important;
         border-top-right-radius:6px !important;
       }
     `;
@@ -217,18 +217,35 @@
   }
 
   function fitCanvas(){
-    const rect = canvas.getBoundingClientRect();
+    if (!canvas) return;
+    const parent = canvas.parentElement;
+    const rect = parent ? parent.getBoundingClientRect() : canvas.getBoundingClientRect();
     const w = Math.max(320, Math.floor(rect.width));
-    const h = Math.max(240, Math.floor(rect.width * 3/4)); // 4:3
+    const h = Math.max(180, Math.floor(rect.height));
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
     }
   }
-  window.addEventListener('resize', fitCanvas); fitCanvas();
+  if (canvas) { window.addEventListener('resize', fitCanvas); fitCanvas(); }
+
+  // 在 canvas 上绘制占位提示
+  function drawPlaceholder() {
+    if (!canvas || !ctx) return;
+    fitCanvas();
+    ctx.fillStyle = '#dce8f5';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '16px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📷 等待摄像头连接...', canvas.width / 2, canvas.height / 2);
+  }
+  drawPlaceholder();
 
   let wsCam, wsUI, frames = 0, fpsTimer = 0;
 
   function drawBlob(buf){
+    if (!canvas || !ctx) return;
     const blob = new Blob([buf], {type:'image/jpeg'});
     if ('createImageBitmap' in window){
       createImageBitmap(blob).then(bmp=>{
@@ -256,8 +273,8 @@
     setBadge($camStatus, false, 'Camera: connecting…');
     wsCam.binaryType = 'arraybuffer';
     wsCam.onopen  = ()=> setBadge($camStatus, true, 'Camera: connected');
-    wsCam.onclose = ()=> setBadge($camStatus, false, 'Camera: disconnected');
-    wsCam.onerror = ()=> setBadge($camStatus, false, 'Camera: error');
+    wsCam.onclose = ()=> { setBadge($camStatus, false, 'Camera: disconnected'); drawPlaceholder(); };
+    wsCam.onerror = ()=> { setBadge($camStatus, false, 'Camera: error'); drawPlaceholder(); };
     wsCam.onmessage = (ev)=> drawBlob(ev.data);
   }
 
@@ -327,15 +344,27 @@
 
 
 // ================= IMU 3D（无虚线框、无滚动条、上下对齐、自适应） =================
-import * as THREE from 'three';
-import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders/GLTFLoader.js';
-
-(() => {
+// 使用动态 import() 避免 CDN 阻塞整个模块初始化
+(async () => {
   const container = document.getElementById('imu_view'); // 左侧3D容器
   const hud       = document.getElementById('imu_hud');  // 右侧IMU容器
 
-  // 左右窗口统一半透明底色
-  if (container) container.style.background = 'rgba(0,0,0,0.2)';
+  // 如果页面中不存在 IMU 容器（例如已切换为地图模式），跳过整段 IMU 3D 初始化
+  if (!container || !hud) {
+    console.log('[IMU 3D] imu_view / imu_hud 不存在，跳过 IMU 模块初始化');
+    return;
+  }
+
+  // 动态加载 Three.js，若 CDN 不可用则仅跳过 3D 渲染，不阻塞其他功能
+  let THREE, GLTFLoader;
+  try {
+    THREE = await import('three');
+    const gltfModule = await import('https://unpkg.com/three@0.155.0/examples/jsm/loaders/GLTFLoader.js');
+    GLTFLoader = gltfModule.GLTFLoader;
+  } catch (e) {
+    console.warn('[IMU 3D] Three.js 加载失败，跳过 3D 渲染:', e.message);
+    return;
+  }
   if (hud) {
     // 关键：右侧容器作为定位参考，同时禁止滚动、清理边框
     Object.assign(hud.style, {
@@ -343,8 +372,8 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
       overflow: 'hidden',
       border: 'none',
       outline: 'none',
-      background: 'rgba(0,0,0,0.2)', // 右侧也给统一底色（整块），干净无额外面板底色
-      borderRadius: '10px'
+      background: 'rgba(220,232,245,0.6)',
+      borderRadius: '16px'
     });
   }
 
@@ -520,7 +549,7 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
       border-radius: 10px;
       padding: 15px;
       min-width: 280px;
-      color: #e6edf3;
+      color: #1e293b;
       font-family: 'Consolas','Monaco',monospace;
       font-size: 12px;
       z-index: 1;
@@ -530,33 +559,33 @@ import { GLTFLoader } from 'https://unpkg.com/three@0.155.0/examples/jsm/loaders
       overflow: hidden;         /* 兜底：即使超出也不出现滚动条 */
     `;
     panel.innerHTML = `
-      <div style="margin-bottom:12px;font-weight:bold;color:#61dafb;border-bottom:1px solid #2a3446;padding-bottom:6px;">
+      <div style="margin-bottom:12px;font-weight:bold;color:#0891b2;border-bottom:1px solid #c7daf0;padding-bottom:6px;">
         IMU 实时数据
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
-        <div><div style="color:#9fb0c3;font-size:10px;">翻滚角 (Roll)</div>
-             <div id="panel-roll"  style="color:#ff6b6b;font-size:16px;font-weight:bold;">0.0°</div></div>
-        <div><div style="color:#9fb0c3;font-size:10px;">俯仰角 (Pitch)</div>
-             <div id="panel-pitch" style="color:#4ecdc4;font-size:16px;font-weight:bold;">0.0°</div></div>
+        <div><div style="color:#64748b;font-size:10px;">翻滚角 (Roll)</div>
+             <div id="panel-roll"  style="color:#dc2626;font-size:16px;font-weight:bold;">0.0°</div></div>
+        <div><div style="color:#64748b;font-size:10px;">俯仰角 (Pitch)</div>
+             <div id="panel-pitch" style="color:#0891b2;font-size:16px;font-weight:bold;">0.0°</div></div>
       </div>
       <div style="margin-bottom:12px;">
-        <div style="color:#9fb0c3;font-size:10px;">偏航角 (Yaw)</div>
-        <div id="panel-yaw" style="color:#45b7d1;font-size:16px;font-weight:bold;">0.0°</div>
+        <div style="color:#64748b;font-size:10px;">偏航角 (Yaw)</div>
+        <div id="panel-yaw" style="color:#0e7490;font-size:16px;font-weight:bold;">0.0°</div>
       </div>
-      <div style="border-top:1px solid #2a3446;padding-top:8px;margin-top:8px;">
-        <div style="color:#9fb0c3;font-size:10px;margin-bottom:6px;">角速度 (°/s)</div>
+      <div style="border-top:1px solid #c7daf0;padding-top:8px;margin-top:8px;">
+        <div style="color:#64748b;font-size:10px;margin-bottom:6px;">角速度 (°/s)</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px;">
-          <div><div style="color:#ff9999;font-size:9px;">gX</div><div id="panel-gx" style="color:#ff9999;font-size:11px;">0.0</div></div>
-          <div><div style="color:#99ff99;font-size:9px;">gY</div><div id="panel-gy" style="color:#99ff99;font-size:11px;">0.0</div></div>
-          <div><div style="color:#9999ff;font-size:9px;">gZ</div><div id="panel-gz" style="color:#9999ff;font-size:11px;">0.0</div></div>
+          <div><div style="color:#dc2626;font-size:9px;">gX</div><div id="panel-gx" style="color:#dc2626;font-size:11px;">0.0</div></div>
+          <div><div style="color:#059669;font-size:9px;">gY</div><div id="panel-gy" style="color:#059669;font-size:11px;">0.0</div></div>
+          <div><div style="color:#2563eb;font-size:9px;">gZ</div><div id="panel-gz" style="color:#2563eb;font-size:11px;">0.0</div></div>
         </div>
       </div>
-      <div style="border-top:1px solid #2a3446;padding-top:8px;">
-        <div style="color:#9fb0c3;font-size:10px;margin-bottom:6px;">加速度 (m/s²)</div>
+      <div style="border-top:1px solid #c7daf0;padding-top:8px;">
+        <div style="color:#64748b;font-size:10px;margin-bottom:6px;">加速度 (m/s²)</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
-          <div><div style="color:#ff9999;font-size:9px;">aX</div><div id="panel-ax" style="color:#ff9999;font-size:11px;">0.00</div></div>
-          <div><div style="color:#99ff99;font-size:9px;">aY</div><div id="panel-ay" style="color:#99ff99;font-size:11px;">0.00</div></div>
-          <div><div style="color:#9999ff;font-size:9px;">aZ</div><div id="panel-az" style="color:#9999ff;font-size:11px;">0.00</div></div>
+          <div><div style="color:#dc2626;font-size:9px;">aX</div><div id="panel-ax" style="color:#dc2626;font-size:11px;">0.00</div></div>
+          <div><div style="color:#059669;font-size:9px;">aY</div><div id="panel-ay" style="color:#059669;font-size:11px;">0.00</div></div>
+          <div><div style="color:#2563eb;font-size:9px;">aZ</div><div id="panel-az" style="color:#2563eb;font-size:11px;">0.00</div></div>
         </div>
       </div>
     `;

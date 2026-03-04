@@ -814,6 +814,7 @@ async def ws_audio(ws: WebSocket):
                         start_ai_with_text_fn=start_ai_with_text_custom,  # 使用自定义版本
                         full_system_reset_fn=full_system_reset,
                         interrupt_lock=interrupt_lock,
+                        play_voice_fn=play_voice_text,
                     )
 
                     recognition = dash_audio.asr.Recognition(
@@ -825,7 +826,12 @@ async def ws_audio(ws: WebSocket):
                     streaming = True
                     last_ts = time.monotonic()
                     keepalive_task = asyncio.create_task(keepalive_loop())
-                    await ui_broadcast_partial("（已开始接收音频…）")
+                    from asr_core import WAKE_WORD_ENABLED
+                    if WAKE_WORD_ENABLED:
+                        await ui_broadcast_partial('💤 休眠中 - 请说"小慧小慧，启动"')
+                        print("[AUDIO] 唤醒词模式已启用，等待唤醒词...", flush=True)
+                    else:
+                        await ui_broadcast_partial("（已开始接收音频…）")
                     await ws.send_text("OK:STARTED")
 
                 elif cmd == "STOP":

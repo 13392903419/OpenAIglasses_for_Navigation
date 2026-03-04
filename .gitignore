@@ -4,6 +4,7 @@ __pycache__/
 
 # Large model weights (keep local; do not push)
 model/*.pt
+mobileclip_blt.ts
 
 # Local IDE/project files
 .idea/

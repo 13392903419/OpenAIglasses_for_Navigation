@@ -7,18 +7,18 @@ class VisionRenderer {
         this.ws = null;
         this.currentData = null;
         
-        // UI配色方案
+        // UI配色方案（蓝白主题）
         this.colors = {
-            primaryBlue: '#00C8FF',
-            secondaryPurple: '#9664FF',
-            accentCyan: '#00FFFF',
+            primaryBlue: '#0891b2',
+            secondaryPurple: '#0e7490',
+            accentCyan: '#06b6d4',
             white: '#FFFFFF',
-            lightGray: '#C8C8C8',
-            darkBg: 'rgba(40, 40, 40, 0.8)',
-            success: '#7FFF00',
-            warning: '#FFA500',
-            error: '#FF7272',
-            glassBg: 'rgba(20, 20, 20, 0.3)',
+            lightGray: '#64748b',
+            darkBg: 'rgba(224, 236, 248, 0.85)',
+            success: '#059669',
+            warning: '#d97706',
+            error: '#dc2626',
+            glassBg: 'rgba(240, 246, 255, 0.4)',
         };
         
         // 动画状态
