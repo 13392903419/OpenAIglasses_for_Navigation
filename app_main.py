@@ -103,6 +103,9 @@ esp32_audio_ws: Optional[WebSocket] = None
 # 【新增】盲道导航相关全局变量
 blind_path_navigator = None
 navigation_active = False
+
+# 【新增】全局ASRCallback引用，用于在导航模式时管理唤醒词
+current_asr_callback: Optional[object] = None
 yolo_seg_model = None
 obstacle_detector = None
 
@@ -448,9 +451,14 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.start_crossing()
             print(f"[CROSS_STREET] 过马路模式已启动，状态: {orchestrator.get_state()}")
+            # 【新增】在导航模式激活系统，跳过唤醒词
+            global current_asr_callback
+            if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
+                current_asr_callback._system_active = True
+                print(f"[AUDIO] 过马路模式已激活ASR系统，用户可直接说命令", flush=True)
             # 播放启动语音并广播到UI
             play_voice_text("过马路模式已启动。")
-            await ui_broadcast_final("[系统] 过马路模式已启动")
+            await ui_broadcast_final("[系统] 过马路模式已启动，说'过马路结束'可停止")
         else:
             print("[CROSS_STREET] 警告：导航统领器未初始化！")
             play_voice_text("启动过马路模式失败，请稍后重试。")
@@ -461,9 +469,16 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.stop_navigation()
             print(f"[CROSS_STREET] 导航已停止，状态: {orchestrator.get_state()}")
+            # 【新增】恢复到非导航模式时，重置唤醒词系统
+            global current_asr_callback
+            if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
+                from asr_core import WAKE_WORD_ENABLED
+                if WAKE_WORD_ENABLED:
+                    current_asr_callback._system_active = False
+                    print(f"[AUDIO] 过马路已停止，ASR系统已重置", flush=True)
             # 播放停止语音并广播到UI
             play_voice_text("已停止导航。")
-            await ui_broadcast_final("[系统] 过马路模式已停止")
+            await ui_broadcast_final("[系统] 过马路模式已停止，说'小慧启动'重新激活")
         else:
             await ui_broadcast_final("[系统] 导航系统未运行")
         return
@@ -514,7 +529,12 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.start_blind_path_navigation()
             print(f"[NAVIGATION] 盲道导航已启动，状态: {orchestrator.get_state()}")
-            await ui_broadcast_final("[系统] 盲道导航已启动")
+            # 【新增】在导航模式激活系统，跳过唤醒词
+            global current_asr_callback
+            if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
+                current_asr_callback._system_active = True
+                print(f"[AUDIO] 导航模式已激活ASR系统，用户可直接说停止导航", flush=True)
+            await ui_broadcast_final("[系统] 盲道导航已启动，说'停止导航'可结束")
         else:
             print("[NAVIGATION] 警告：导航统领器未初始化！")
             await ui_broadcast_final("[系统] 导航系统未就绪")
@@ -524,7 +544,14 @@ async def start_ai_with_text_custom(user_text: str):
         if orchestrator:
             orchestrator.stop_navigation()
             print(f"[NAVIGATION] 导航已停止，状态: {orchestrator.get_state()}")
-            await ui_broadcast_final("[系统] 盲道导航已停止")
+            # 【新增】恢复到非导航模式时，重置唤醒词系统
+            global current_asr_callback
+            if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
+                from asr_core import WAKE_WORD_ENABLED
+                if WAKE_WORD_ENABLED:
+                    current_asr_callback._system_active = False
+                    print(f"[AUDIO] 导航已停止，ASR系统已重置", flush=True)
+            await ui_broadcast_final("[系统] 盲道导航已停止，说'小慧启动'重新激活")
         else:
             await ui_broadcast_final("[系统] 导航系统未运行")
         return
@@ -591,6 +618,15 @@ async def start_ai_with_text_custom(user_text: str):
     
     # 【修改】omni对话开始时，切换到CHAT模式
     global omni_conversation_active, omni_previous_nav_state
+    
+    # 【新增】在导航模式下，不进入omni对话，直接返回
+    if orchestrator:
+        current_state = orchestrator.get_state()
+        if current_state not in ["CHAT", "IDLE"]:
+            print(f"[{current_state}模式] 导航中无法进入对话模式，已忽略语音: {user_text}")
+            await ui_broadcast_final(f"[{current_state}] 导航中，请说导航命令或说'停止导航'")
+            return  # 【关键】不进入 start_ai_with_text，避免 hard_reset_audio
+    
     omni_conversation_active = True
     
     # 保存当前导航状态并切换到CHAT模式
@@ -816,6 +852,15 @@ async def ws_audio(ws: WebSocket):
                         interrupt_lock=interrupt_lock,
                         play_voice_fn=play_voice_text,
                     )
+                    
+                    # 【新增】保存全局引用，同时检查导航状态
+                    global current_asr_callback, orchestrator
+                    current_asr_callback = cb
+                    # 如果当前在导航模式，自动激活系统（跳过唤醒词）
+                    if orchestrator and orchestrator.get_state() not in ["IDLE", "CHAT"]:
+                        if hasattr(cb, '_system_active'):
+                            cb._system_active = True
+                            print(f"[AUDIO] 导航模式已激活，跳过唤醒词检查，状态: {orchestrator.get_state()}", flush=True)
 
                     recognition = dash_audio.asr.Recognition(
                         api_key=API_KEY, model=MODEL, format=AUDIO_FMT,
