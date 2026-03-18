@@ -16,11 +16,11 @@ using namespace websockets;
 #include "camera_pins.h"
 
 // ===== WiFi / Server (EDIT THESE) =====
-static const char* WIFI_SSID = "2018";
-static const char* WIFI_PASS = "20182018";
+static const char* WIFI_SSID = "Magic5";
+static const char* WIFI_PASS = "137900023";
 
 // Use your PC LAN IP (NOT 127.0.0.1). Example: "192.168.1.100"
-static const char* SERVER_HOST = "192.168.1.111";
+static const char* SERVER_HOST = "10.123.166.97";
 static const uint16_t SERVER_PORT = 8081;
 static const char* CAM_WS_PATH = "/ws/camera";
 
