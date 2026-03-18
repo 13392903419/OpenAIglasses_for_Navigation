@@ -92,8 +92,8 @@ except Exception as e:
     print(f"[DETECTOR] YOLOE backend not ready: {e}", flush=True)
 
 # ========= 路径参数（按需修改）=========
-YOLO_MODEL_PATH = r'C:\Users\Administrator\Desktop\rebuild1002\model\shoppingbest5.pt'
-HAND_TASK_PATH  = r"C:\Users\Administrator\Desktop\rebuild1002\model\hand_landmarker.task"
+YOLO_MODEL_PATH = r'D:\\Blind_Navigation\\OpenAIglasses_for_Navigation\\model\\shoppingbest5.pt'
+HAND_TASK_PATH  = r"D:\\Blind_Navigation\\OpenAIglasses_for_Navigation\\model\\hand_landmarker.task"
 
 # ========= 摄像头 =========
 CAM_INDEX = 0
@@ -143,20 +143,24 @@ YOLO_CORRECTION_IOU_THRESHOLD = 0.2  # IoU阈值，越低越积极矫正
 YOLO_CORRECTION_CONF_THRESHOLD = 0.15  # 置信度阈值，越低检测越敏感
 
 # ========= 方向引导音频路径 =========
-AUDIO_DIR = r"E:\沙粒云\自媒体\2025视频制作\20250925AI眼镜\AI眼镜合并\audio"  # 请修改为实际路径
+AUDIO_DIR = os.path.join(os.path.dirname(__file__), "music")  # 相对路径，更便携  # 请修改为实际路径
 AUDIO_FILES = {
-    "向上": os.path.join(AUDIO_DIR, "up.wav"),
-    "向下": os.path.join(AUDIO_DIR, "down.wav"),
-    "向左": os.path.join(AUDIO_DIR, "left.wav"),
-    "向右": os.path.join(AUDIO_DIR, "right.wav"),
-    "向前": os.path.join(AUDIO_DIR, "forward.wav"),
-    "后退": os.path.join(AUDIO_DIR, "backward.wav"),
-    "OK": os.path.join(AUDIO_DIR, "ok.wav"),  # 添加OK音效
+    "向上": os.path.join(AUDIO_DIR, "向上.wav"),
+    "向下": os.path.join(AUDIO_DIR, "向下.wav"),
+    "向左": os.path.join(AUDIO_DIR, "向左.wav"),
+    "向右": os.path.join(AUDIO_DIR, "向右.wav"),
+    "向前": os.path.join(AUDIO_DIR, "向前.wav"),
+    "后退": os.path.join(AUDIO_DIR, "向后.wav"),
+    "OK": os.path.join(AUDIO_DIR, "已对中.wav"),  # 添加OK音效
 }
 GUIDANCE_INTERVAL_SEC = 1.5  # 引导播报间隔
 
-# 初始化pygame音频
-pygame.mixer.init()
+# 初始化pygame音频（容器环境中可能没有音频设备）
+try:
+    pygame.mixer.init()
+except pygame.error as e:
+    print(f"[Warning] pygame.mixer 初始化失败（容器环境）: {e}", flush=True)
+    # 继续运行，音频功能将被跳过
 
 # ========= 窗口 =========
 WINDOW = "YOLO Seg + Flow Polygon (Peri-Relock) (Grab Guidance)"

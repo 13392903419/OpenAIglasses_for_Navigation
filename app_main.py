@@ -419,7 +419,7 @@ def stop_yolomedia():
 # ========= 自定义的 start_ai_with_text，支持识别特殊命令 =========
 async def start_ai_with_text_custom(user_text: str):
     """扩展版的AI启动函数，支持识别特殊命令"""
-    global navigation_active, blind_path_navigator, cross_street_active, cross_street_navigator, orchestrator
+    global navigation_active, blind_path_navigator, cross_street_active, cross_street_navigator, orchestrator, current_asr_callback, yolomedia_running, yolomedia_stop_event, yolomedia_thread, yolomedia_sending_frames
     
     # 【修改】在导航模式和红绿灯检测模式下，只有特定词才进入omni对话
     if orchestrator:
@@ -452,7 +452,6 @@ async def start_ai_with_text_custom(user_text: str):
             orchestrator.start_crossing()
             print(f"[CROSS_STREET] 过马路模式已启动，状态: {orchestrator.get_state()}")
             # 【新增】在导航模式激活系统，跳过唤醒词
-            global current_asr_callback
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 current_asr_callback._system_active = True
                 print(f"[AUDIO] 过马路模式已激活ASR系统，用户可直接说命令", flush=True)
@@ -470,7 +469,6 @@ async def start_ai_with_text_custom(user_text: str):
             orchestrator.stop_navigation()
             print(f"[CROSS_STREET] 导航已停止，状态: {orchestrator.get_state()}")
             # 【新增】恢复到非导航模式时，重置唤醒词系统
-            global current_asr_callback
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 from asr_core import WAKE_WORD_ENABLED
                 if WAKE_WORD_ENABLED:
@@ -530,7 +528,6 @@ async def start_ai_with_text_custom(user_text: str):
             orchestrator.start_blind_path_navigation()
             print(f"[NAVIGATION] 盲道导航已启动，状态: {orchestrator.get_state()}")
             # 【新增】在导航模式激活系统，跳过唤醒词
-            global current_asr_callback
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 current_asr_callback._system_active = True
                 print(f"[AUDIO] 导航模式已激活ASR系统，用户可直接说停止导航", flush=True)
@@ -545,7 +542,6 @@ async def start_ai_with_text_custom(user_text: str):
             orchestrator.stop_navigation()
             print(f"[NAVIGATION] 导航已停止，状态: {orchestrator.get_state()}")
             # 【新增】恢复到非导航模式时，重置唤醒词系统
-            global current_asr_callback
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 from asr_core import WAKE_WORD_ENABLED
                 if WAKE_WORD_ENABLED:
@@ -770,7 +766,7 @@ async def ws_ui(ws: WebSocket):
 # ---------- WebSocket：ESP32 音频入口（ASR 上行） ----------
 @app.websocket("/ws_audio")
 async def ws_audio(ws: WebSocket):
-    global esp32_audio_ws
+    global esp32_audio_ws, current_asr_callback, orchestrator
     esp32_audio_ws = ws
     await ws.accept()
     print("\n[AUDIO] client connected")
@@ -854,7 +850,6 @@ async def ws_audio(ws: WebSocket):
                     )
                     
                     # 【新增】保存全局引用，同时检查导航状态
-                    global current_asr_callback, orchestrator
                     current_asr_callback = cb
                     # 如果当前在导航模式，自动激活系统（跳过唤醒词）
                     if orchestrator and orchestrator.get_state() not in ["IDLE", "CHAT"]:
