@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-title" content="眼镜导航" />
+<meta name="theme-color" content="#333333" />
+<meta name="description" content="AI 智能盲人眼镜导航系统 - 面向视障人士的智能导航与辅助系统" />
+<link rel="manifest" href="/static/manifest.json" />
+<link rel="icon" type="image/png" href="/static/icon/icon-192x192.png" />
 <title>ESP32 相机 + 实时语音识别 + 定位导航</title>
 <!-- Font Awesome -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
@@ -18,7 +25,7 @@
     var s = document.createElement('script');
     s.type = 'text/javascript';
     s.async = true;
-    var ak = 'kAOe1GJYmW5XZzNuwB8NfxiW71LItGUD';
+    var ak = 'JdpmYDQsldEe0886JxFHqOqXFjuXtRd6';
     s.src = 'https://api.map.baidu.com/api?v=3.0&ak=' + encodeURIComponent(ak) + '&callback=baiduMapInit';
     s.onerror = function() { console.error('[地图] API加载失败'); };
     document.head.appendChild(s);
@@ -509,6 +516,64 @@
   // ========== 页面加载时初始化地图 ==========
   window.addEventListener('load', function() {
     window.onBaiduMapReady(initMap);
+  });
+
+  // ========== PWA Service Worker 注册 ==========
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function() {
+      navigator.serviceWorker.register('/static/service-worker.js', { scope: '/' })
+        .then(function(registration) {
+          console.log('[PWA] Service Worker 注册成功:', registration);
+          
+          // 检查更新
+          setInterval(function() {
+            registration.update();
+          }, 3600000); // 每小时检查一次
+        })
+        .catch(function(err) {
+          console.warn('[PWA] Service Worker 注册失败:', err);
+        });
+    });
+
+    // 检测新版本可用
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function() {
+      if (refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    });
+  }
+
+  // ========== PWA 安装提示 ==========
+  let installPromptEvent = null;
+  window.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault();
+    installPromptEvent = e;
+    console.log('[PWA] 支持离线安装');
+    
+    // 显示安装按钮（可选）
+    const installBtn = document.getElementById('installBtn');
+    if (installBtn) {
+      installBtn.style.display = 'block';
+      installBtn.addEventListener('click', function() {
+        if (installPromptEvent) {
+          installPromptEvent.prompt();
+          installPromptEvent.userChoice.then(function(choiceResult) {
+            if (choiceResult.outcome === 'accepted') {
+              console.log('[PWA] 用户接受安装');
+            } else {
+              console.log('[PWA] 用户拒绝安装');
+            }
+            installPromptEvent = null;
+          });
+        }
+      });
+    }
+  });
+
+  window.addEventListener('appinstalled', function() {
+    console.log('[PWA] 应用已安装到主屏幕');
+    installPromptEvent = null;
   });
 </script>
 
