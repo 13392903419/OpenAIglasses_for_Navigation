@@ -20,7 +20,7 @@ from workflow_blindpath import BlindPathNavigator
 # 新增：导入过马路导航器
 from workflow_crossstreet import CrossStreetNavigator
 import torch
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Body
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
@@ -79,10 +79,17 @@ from audio_player import initialize_audio_system, play_voice_text
 import sync_recorder
 import signal
 import atexit
+import subprocess
 
 # ---- IMU UDP ----
 UDP_IP   = "0.0.0.0"
-UDP_PORT = 12345
+UDP_PORT = int(os.getenv("UDP_PORT", "12345"))
+
+# ---- 电脑麦克风/扬声器自动启动（开发模式，无 ESP32 时使用）----
+# 设置 AUTO_PC_AUDIO=0 可禁用（例如使用 ESP32 硬件时）
+AUTO_PC_AUDIO = os.getenv("AUTO_PC_AUDIO", "1") == "1"
+_pc_mic_process: Optional[subprocess.Popen] = None
+_pc_speaker_process: Optional[subprocess.Popen] = None
 
 app = FastAPI()
 
@@ -117,6 +124,15 @@ orchestrator = None  # 新增
 # 【新增】omni对话状态标志
 omni_conversation_active = False  # 标记omni对话是否正在进行
 omni_previous_nav_state = None  # 保存omni激活前的导航状态，用于恢复
+
+# 【新增】地图导航目的地（语音「导航到xxx」解析后设置）
+current_destination: Optional[str] = None
+# 【新增】地图路线步骤与当前指引（供三级优先级播报使用）
+route_steps: List[str] = []
+route_path: List[Any] = []  # 路线坐标点，用于后端计算当前步骤
+current_map_instruction: Optional[str] = None
+last_map_instruction_ts: float = 0.0
+MAP_INSTRUCTION_INTERVAL: float = 5.0  # 地图指引最小播报间隔（秒）
 
 # 【新增】模型加载函数
 def load_navigation_models():
@@ -431,8 +447,8 @@ async def start_ai_with_text_custom(user_text: str):
             is_allowed_query = any(keyword in user_text for keyword in allowed_keywords)
             
             # 检查是否是导航控制命令
-            nav_control_keywords = ["开始过马路", "过马路结束", "开始导航", "盲道导航", "停止导航", "结束导航", 
-                                   "检测红绿灯", "看红绿灯", "停止检测", "停止红绿灯"]
+            nav_control_keywords = ["开始过马路", "过马路结束", "启动导航", "开始导航", "盲道导航", "停止导航", "结束导航", 
+                                   "导航到", "导航去", "检测红绿灯", "看红绿灯", "停止检测", "停止红绿灯"]
             is_nav_control = any(keyword in user_text for keyword in nav_control_keywords)
             
             # 如果既不是允许的查询，也不是导航控制命令，则丢弃
@@ -517,8 +533,30 @@ async def start_ai_with_text_custom(user_text: str):
             await ui_broadcast_final(f"[系统] 停止失败: {e}")
         return
     
-    # 【修改】检查是否是导航相关命令 - 使用orchestrator控制
-    if "开始导航" in user_text or "盲道导航" in user_text or "帮我导航" in user_text:
+    # 【新增】解析「导航到xxx」/「请帮我导航到松江印象城」等，提取目的地
+    nav_to_pattern = r"(?:请?帮我)?\s*(?:导航到|导航去|去|到)\s*(.+?)(?:。|！|？|$)"
+    nav_to_match = re.search(nav_to_pattern, user_text)
+    if nav_to_match:
+        dest = nav_to_match.group(1).strip()
+        # 过滤疑问词，避免误触发
+        if dest and len(dest) >= 2 and dest not in ("什么", "哪里", "哪儿", "哪里啊"):
+            global current_destination
+            current_destination = dest
+            if yolomedia_running:
+                stop_yolomedia()
+            if orchestrator:
+                orchestrator.start_blind_path_navigation()
+                if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
+                    current_asr_callback._system_active = True
+                play_voice_text(f"正在为您导航到{dest}，请稍候。")
+                await ui_broadcast_raw(f"NAV_DEST:{dest}")
+                await ui_broadcast_final(f"[系统] 目的地已设为 {dest}，正在规划路线")
+            else:
+                await ui_broadcast_final("[系统] 导航系统未就绪")
+            return
+
+    # 【修改】检查是否是导航相关命令 - 使用orchestrator控制（含「启动导航」）
+    if "启动导航" in user_text or "开始导航" in user_text or "盲道导航" in user_text or "帮我导航" in user_text:
         # 【新增】如果正在找物品，先停止
         if yolomedia_running:
             stop_yolomedia()
@@ -531,7 +569,7 @@ async def start_ai_with_text_custom(user_text: str):
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 current_asr_callback._system_active = True
                 print(f"[AUDIO] 导航模式已激活ASR系统，用户可直接说停止导航", flush=True)
-            await ui_broadcast_final("[系统] 盲道导航已启动，说'停止导航'可结束")
+            play_voice_text("盲道导航已启动，说停止导航可结束。")
         else:
             print("[NAVIGATION] 警告：导航统领器未初始化！")
             await ui_broadcast_final("[系统] 导航系统未就绪")
@@ -552,7 +590,7 @@ async def start_ai_with_text_custom(user_text: str):
             await ui_broadcast_final("[系统] 导航系统未运行")
         return
 
-    nav_cmd_keywords = ["开始过马路", "过马路结束", "开始导航", "盲道导航", "停止导航", "结束导航", "立即通过", "现在通过", "继续"]
+    nav_cmd_keywords = ["开始过马路", "过马路结束", "启动导航", "开始导航", "盲道导航", "停止导航", "结束导航", "立即通过", "现在通过", "继续"]
     if any(k in user_text for k in nav_cmd_keywords):
         if orchestrator:
             orchestrator.on_voice_command(user_text)
@@ -744,6 +782,53 @@ def root():
 @app.get("/api/health", response_class=PlainTextResponse)
 def health():
     return "OK"
+
+# ---------- 地图导航 API（供前端路线规划与定位上报） ----------
+@app.post("/api/navigation/route")
+async def api_navigation_route(body: Dict[str, Any] = Body(default={})):
+    """接收前端规划的路线步骤与路径点"""
+    global route_steps, route_path
+    steps = body.get("steps") or []
+    route_steps = steps if isinstance(steps, list) else []
+    path = body.get("path") or []
+    route_path = path if isinstance(path, list) else []
+    return {"ok": True, "steps_count": len(route_steps), "path_points": len(route_path)}
+
+@app.post("/api/navigation/position")
+async def api_navigation_position(body: Dict[str, Any] = Body(default={})):
+    """接收前端上报的实时坐标与步骤索引，更新当前应播报的指引"""
+    global current_map_instruction, route_steps
+    lng = body.get("lng")
+    lat = body.get("lat")
+    step_index = body.get("step_index")
+    if lng is not None and lat is not None and route_steps:
+        idx = 0
+        if step_index is not None and isinstance(step_index, int) and 0 <= step_index < len(route_steps):
+            idx = step_index
+        else:
+            idx = _compute_step_index_from_position(lng, lat)
+        current_map_instruction = route_steps[idx]
+    return {"ok": True, "instruction": current_map_instruction}
+
+
+def _compute_step_index_from_position(lng: float, lat: float) -> int:
+    """根据坐标与 route_path 计算当前步骤索引（后端兜底）"""
+    global route_path, route_steps
+    if not route_path or not route_steps:
+        return 0
+    best_i, best_d = 0, float("inf")
+    for i, p in enumerate(route_path):
+        if isinstance(p, dict):
+            plng, plat = p.get("lng"), p.get("lat")
+        else:
+            plng, plat = (p[0], p[1]) if len(p) >= 2 else (p[0], p[0])
+        d = (lng - plng) ** 2 + (lat - plat) ** 2
+        if d < best_d:
+            best_d, best_i = d, i
+    if len(route_path) == len(route_steps):
+        return min(best_i, len(route_steps) - 1)
+    step_len = max(1, len(route_path) // len(route_steps))
+    return min(best_i // step_len, len(route_steps) - 1)
 
 # 注册 /stream.wav
 register_stream_route(app)
@@ -1024,10 +1109,19 @@ async def ws_camera_esp(ws: WebSocket):
                         else:
                             res = orchestrator.process_frame(bgr)
 
-                            if res.guidance_text:
+                            # 三级优先级播报：P1地图指引 > P2障碍物 > P3盲道
+                            global last_map_instruction_ts
+                            to_say = None
+                            now_ts = time.time()
+                            if current_map_instruction and current_destination and (now_ts - last_map_instruction_ts >= MAP_INSTRUCTION_INTERVAL):
+                                to_say = current_map_instruction
+                                last_map_instruction_ts = now_ts
+                            elif res.guidance_text:
+                                to_say = res.guidance_text
+                            if to_say:
                                 try:
-                                    play_voice_text(res.guidance_text)
-                                    await ui_broadcast_final(f"[导航] {res.guidance_text}")
+                                    play_voice_text(to_say)
+                                    await ui_broadcast_final(f"[导航] {to_say}")
                                 except Exception:
                                     pass
 
@@ -1313,12 +1407,52 @@ async def on_startup_init_audio():
 @app.on_event("startup")
 async def on_startup():
     loop = asyncio.get_running_loop()
-    await loop.create_datagram_endpoint(lambda: UDPProto(), local_addr=(UDP_IP, UDP_PORT))
+    ports_to_try = [UDP_PORT] + [UDP_PORT + i for i in range(1, 6)]
+    last_err = None
+    for port in ports_to_try:
+        try:
+            await loop.create_datagram_endpoint(lambda: UDPProto(), local_addr=(UDP_IP, port))
+            if port != UDP_PORT:
+                print(f"[UDP] 端口 {UDP_PORT} 已被占用，已改用端口 {port}")
+            break
+        except OSError as e:
+            last_err = e
+            is_port_in_use = (
+                getattr(e, 'winerror', None) == 10048 or
+                getattr(e, 'errno', None) in (98, 48) or
+                '10048' in str(e) or 'Address already in use' in str(e)
+            )
+            if is_port_in_use:
+                continue
+            raise
+    else:
+        print(f"[UDP] 端口 {ports_to_try[0]}-{ports_to_try[-1]} 均被占用，请关闭其他 app_main 实例或设置 UDP_PORT=12350")
+        raise last_err
+
+    # 自动启动电脑麦克风+扬声器（开发模式）
+    if AUTO_PC_AUDIO:
+        threading.Thread(target=_start_pc_audio_subprocesses, daemon=True).start()
 
 @app.on_event("shutdown")
 async def on_shutdown():
     """应用关闭时的清理工作"""
+    global _pc_mic_process, _pc_speaker_process
     print("[SHUTDOWN] 开始清理资源...")
+    
+    # 停止电脑麦克风/扬声器子进程
+    for proc, name in [(_pc_mic_process, "mic_test"), (_pc_speaker_process, "speaker_test")]:
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            print(f"[SHUTDOWN] 已停止 {name}")
+    _pc_mic_process = None
+    _pc_speaker_process = None
     
     # 停止YOLO媒体处理
     stop_yolomedia()
@@ -1328,7 +1462,37 @@ async def on_shutdown():
     
     print("[SHUTDOWN] 资源清理完成")
 
-# app_main.py —— 在文件里已有的 @app.on_event("startup") 之后，再加一个新的 startup 钩子
+
+def _start_pc_audio_subprocesses():
+    """在后台线程中启动 mic_test 和 speaker_test，延迟几秒确保服务已就绪"""
+    global _pc_mic_process, _pc_speaker_process
+    if not AUTO_PC_AUDIO:
+        return
+    import time
+    time.sleep(3)  # 等待 uvicorn 完全启动
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        _pc_mic_process = subprocess.Popen(
+            [sys.executable, os.path.join(script_dir, "mic_test.py")],
+            cwd=script_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+        )
+        print("[AUDIO] 已自动启动电脑麦克风 (mic_test.py)")
+    except Exception as e:
+        print(f"[AUDIO] 启动 mic_test 失败: {e}")
+    try:
+        _pc_speaker_process = subprocess.Popen(
+            [sys.executable, os.path.join(script_dir, "speaker_test.py")],
+            cwd=script_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
+        )
+        print("[AUDIO] 已自动启动电脑扬声器 (speaker_test.py)")
+    except Exception as e:
+        print(f"[AUDIO] 启动 speaker_test 失败: {e}")
 
 
 # --- 导出接口（可选） ---
