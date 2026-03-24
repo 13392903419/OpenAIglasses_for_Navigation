@@ -88,6 +88,9 @@ UDP_PORT = int(os.getenv("UDP_PORT", "12345"))
 # ---- 电脑麦克风/扬声器自动启动（开发模式，无 ESP32 时使用）----
 # 设置 AUTO_PC_AUDIO=0 可禁用（例如使用 ESP32 硬件时）
 AUTO_PC_AUDIO = os.getenv("AUTO_PC_AUDIO", "1") == "1"
+# 摄像头断线时是否重置导航状态。默认「否」：短暂 WiFi/ESP32 重连时保留 BLINDPATH_NAV 等状态，
+# 避免 IDLE→CHAT 后 ASR 回到休眠、需再说「小慧启动」才能听见指令。
+RESET_NAV_ON_CAMERA_DISCONNECT = os.getenv("RESET_NAV_ON_CAMERA_DISCONNECT", "0") == "1"
 _pc_mic_process: Optional[subprocess.Popen] = None
 _pc_speaker_process: Optional[subprocess.Popen] = None
 
@@ -1166,14 +1169,20 @@ async def ws_camera_esp(ws: WebSocket):
         esp32_camera_ws = None
         print("[CAMERA] ESP32 disconnected")
         
-        # 【新增】清理导航状态
-        if blind_path_navigator:
-            blind_path_navigator.reset()
-        if cross_street_navigator:
-            cross_street_navigator.reset()
-        if orchestrator:
-            orchestrator.reset()
-            print("[NAV MASTER] 统领器已重置")
+        # 清理导航状态（可选）：断线即 reset 会导致重连后 state 经 IDLE→CHAT，语音需重新唤醒。
+        if RESET_NAV_ON_CAMERA_DISCONNECT:
+            if blind_path_navigator:
+                blind_path_navigator.reset()
+            if cross_street_navigator:
+                cross_street_navigator.reset()
+            if orchestrator:
+                orchestrator.reset()
+                print("[NAV MASTER] 统领器已重置（RESET_NAV_ON_CAMERA_DISCONNECT=1）")
+        else:
+            print(
+                "[CAMERA] 已保留导航状态（未 reset）。若需断线即清空，请设置 RESET_NAV_ON_CAMERA_DISCONNECT=1",
+                flush=True,
+            )
 
 # ---------- WebSocket：浏览器订阅相机帧 ----------
 @app.websocket("/ws/viewer")
