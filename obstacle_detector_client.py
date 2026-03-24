@@ -20,9 +20,9 @@ def _get_device_from_env() -> str:
 
 
 def _get_amp_from_env() -> tuple[str, torch.dtype | None]:
-    policy = os.getenv("AIGLASS_AMP", "bf16").lower().strip()
+    policy = os.getenv("AIGLASS_AMP", "fp16").lower().strip()
     if policy not in ("bf16", "fp16", "off"):
-        policy = "bf16"
+        policy = "fp16"
     dtype = torch.bfloat16 if policy == "bf16" else (torch.float16 if policy == "fp16" else None)
     return policy, dtype
 

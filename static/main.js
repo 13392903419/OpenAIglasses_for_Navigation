@@ -309,6 +309,21 @@
         }catch(e){}
         return;
       }
+      if (s.startsWith('NAV_DEST:')){
+        const dest = s.slice(9).trim();
+        const input = document.getElementById('destinationInput');
+        if (input && dest && typeof searchDestination === 'function') {
+          input.value = dest;
+          if (typeof locateMe === 'function') locateMe();
+          searchDestination(function() {
+            if (typeof planRoute === 'function' && typeof startNavigation === 'function') {
+              planRoute(function() { startNavigation(); });
+            }
+          });
+          console.log('[导航] 语音目的地已设置，正在规划路线:', dest);
+        }
+        return;
+      }
       if (s.startsWith('PARTIAL:')){ 
         $partial.textContent = s.slice(8); 
         return; 

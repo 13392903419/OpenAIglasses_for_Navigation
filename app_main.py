@@ -47,7 +47,7 @@ if sys.platform.startswith("win"):
 # ---- DashScope ASR 基础 ----
 from dashscope import audio as dash_audio  # 若未安装，会在原项目里抛错提示
 
-API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-a673b9ac8f7e4a139e1569a6320e2caa")
+API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-82107b037f5847ee90deb81f6f976e0f")
 if not API_KEY:
     raise RuntimeError("未设置 DASHSCOPE_API_KEY")
 

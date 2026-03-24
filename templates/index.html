@@ -473,7 +473,7 @@
   }
 
   // ========== 搜索目的地 ==========
-  function searchDestination() {
+  function searchDestination(onComplete) {
     var keyword = document.getElementById('destinationInput').value.trim();
     if (!keyword) return;
     if (typeof BMap === 'undefined') return;
@@ -490,6 +490,7 @@
           map.panTo(poi.point);
           document.getElementById('destinationName').textContent = poi.title || keyword;
           document.getElementById('destinationInfoPanel').style.display = '';
+          if (typeof onComplete === 'function') onComplete();
         }
       }
     });
@@ -506,12 +507,138 @@
     }
   });
 
+  // ========== 路线规划与导航 ==========
+  let routeSteps = [];  // 当前路线步骤（用于播报）
+  let routePath = [];   // 路线坐标点 [[lng,lat],...]，用于计算当前步骤
+  let watchPositionId = null;  // 定位监听句柄
+  let currentStepIndex = 0;    // 当前播报的步骤索引
+
+  function planRoute(onSuccess) {
+    if (!map || !currentPosition || !destinationPoint) {
+      console.warn('[地图] 规划路线需要先定位并设置目的地');
+      if (!currentPosition) locateMe();
+      toggleMoreMenu();
+      return;
+    }
+    if (typeof BMap === 'undefined') return;
+    if (routePolyline) { map.removeOverlay(routePolyline); routePolyline = null; }
+    var walk = new BMap.WalkingRoute(map, {
+      renderOptions: { map: map, autoViewport: true },
+      onSearchComplete: function(results) {
+        if (walk.getStatus() === (typeof BMAP_STATUS_SUCCESS !== 'undefined' ? BMAP_STATUS_SUCCESS : 0)) {
+          var plan = results.getPlan(0);
+          if (plan) {
+            var route = plan.getRoute(0);
+            routeSteps = [];
+            routePath = [];
+            currentStepIndex = 0;
+            for (var i = 0; i < route.getNumSteps(); i++) {
+              var step = route.getStep(i);
+              routeSteps.push(step.getDescription());
+              try {
+                var pt = step.getPosition ? step.getPosition() : (step.getPoint ? step.getPoint() : null);
+                if (pt) routePath.push({ lng: pt.lng, lat: pt.lat });
+              } catch (e) {}
+            }
+            if (routePath.length === 0 && route.getPath) {
+              var path = route.getPath();
+              if (path && path.length) {
+                for (var j = 0; j < path.length; j++) {
+                  var p = path[j];
+                  routePath.push({ lng: p.lng, lat: p.lat });
+                }
+              }
+            }
+            console.log('[地图] 路线规划成功，共' + routeSteps.length + '步');
+            fetch('/api/navigation/route', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ steps: routeSteps, path: routePath })
+            }).catch(function(e) { console.warn('[地图] 上报路线失败', e); });
+            if (typeof onSuccess === 'function') onSuccess();
+          }
+        } else {
+          console.warn('[地图] 路线规划失败');
+        }
+        toggleMoreMenu();
+      }
+    });
+    walk.search(currentPosition, destinationPoint);
+  }
+
+  function startNavigation() {
+    if (!currentPosition || !destinationPoint) {
+      console.warn('[地图] 请先定位并设置目的地');
+      return;
+    }
+    if (watchPositionId !== null) return;  // 已在导航中
+    if (routeSteps.length === 0) {
+      planRoute(function() { startNavigation(); });
+      return;
+    }
+    function haversineDist(p1, p2) {
+      var R = 6371000;
+      var dlat = (p2.lat - p1.lat) * Math.PI / 180;
+      var dlon = (p2.lng - p1.lng) * Math.PI / 180;
+      var a = Math.sin(dlat/2)*Math.sin(dlat/2) + Math.cos(p1.lat*Math.PI/180)*Math.cos(p2.lat*Math.PI/180)*Math.sin(dlon/2)*Math.sin(dlon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+    function computeStepIndex(lng, lat) {
+      if (!routePath.length || !routeSteps.length) return 0;
+      var user = { lng: lng, lat: lat };
+      if (routePath.length === routeSteps.length) {
+        var best = 0, bestD = 1e9;
+        for (var i = 0; i < routePath.length; i++) {
+          var d = haversineDist(user, routePath[i]);
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        return Math.min(best, routeSteps.length - 1);
+      }
+      var stepLen = Math.floor(routePath.length / routeSteps.length) || 1;
+      var best = 0, bestD = 1e9;
+      for (var i = 0; i < routeSteps.length; i++) {
+        var idx = Math.min(i * stepLen, routePath.length - 1);
+        var d = haversineDist(user, routePath[idx]);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+    function onPosition(pos) {
+      var pt = new BMap.Point(pos.coords.longitude, pos.coords.latitude);
+      var convertor = new BMap.Convertor();
+      convertor.translate([pt], 1, 5, function(data) {
+        if (data.status === 0 && data.points.length > 0) {
+          var bdPt = data.points[0];
+          updateMapPosition(bdPt);
+          var stepIdx = computeStepIndex(bdPt.lng, bdPt.lat);
+          if (stepIdx > currentStepIndex) currentStepIndex = stepIdx;
+          fetch('/api/navigation/position', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lng: bdPt.lng, lat: bdPt.lat, step_index: currentStepIndex })
+          }).catch(function() {});
+        }
+      });
+    }
+    if (navigator.geolocation && navigator.geolocation.watchPosition) {
+      watchPositionId = navigator.geolocation.watchPosition(onPosition, function() {}, { enableHighAccuracy: true, maximumAge: 5000 });
+      console.log('[地图] 导航已启动，实时定位中');
+    } else {
+      tryBaiduGeolocation();
+    }
+  }
+
+  function stopNavigation() {
+    if (watchPositionId !== null && navigator.geolocation.clearWatch) {
+      navigator.geolocation.clearWatch(watchPositionId);
+      watchPositionId = null;
+    }
+  }
+
   // ========== 占位函数（后续实现API接入） ==========
   function enableManualStartLocation() { console.log('TODO: 手动选择当前位置'); toggleMoreMenu(); }
   function enableManualDestination() { console.log('TODO: 手动选择目的地'); toggleMoreMenu(); }
-  function planRoute() { console.log('TODO: 规划路线'); toggleMoreMenu(); }
   function showNearbyBlindways() { console.log('TODO: 查找周边盲道'); toggleMoreMenu(); }
-  function startNavigation() { console.log('TODO: 开始导航'); }
 
   // ========== 页面加载时初始化地图 ==========
   window.addEventListener('load', function() {
