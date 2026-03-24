@@ -164,7 +164,17 @@ class BlindPathNavigator:
         
         # 帧计数器
         self.frame_counter = 0
-        
+
+        # 【新增】盲道连续可见5秒播报功能
+        self.blind_path_visible_frames = 0  # 盲道可见帧计数器
+        self.blind_path_cooldown_time = 0.0  # 盲道播报冷却时间
+        self.BLIND_PATH_VISIBLE_THRESHOLD_FRAMES = 150  # 5秒@30fps
+        self.BLIND_PATH_COOLDOWN_SECONDS = 10.0  # 播报后冷却10秒
+        self.BLIND_PATH_AREA_THRESHOLD = 0.05  # 盲道面积阈值（占画面5%以上）
+        self.BLIND_PATH_CENTER_MIN_RATIO = 0.4  # 画面中间40%宽度起始
+        self.BLIND_PATH_CENTER_MAX_RATIO = 0.6  # 画面中间60%宽度结束
+        self.pending_blind_path_voice = None  # 待播报的盲道语音
+
         # 直行提示配置 - 支持环境变量
         self.guide_interval = float(os.getenv("AIGLASS_STRAIGHT_INTERVAL", "4.0"))  # 播报间隔（秒）
         self.last_guide_time = 0.0
@@ -435,8 +445,62 @@ class BlindPathNavigator:
         
         # 【修改】保留斑马线检测结果，用于斑马线感知
         # crosswalk_mask = None  # 不再强制设为None
-        
-        # 2. 【禁用掩码稳定化和光流外推】直接使用实时检测结果
+
+        # 【新增】2.5 盲道连续可见5秒播报检测
+        current_time = time.time()
+        self.pending_blind_path_voice = None
+
+        # 更新冷却时间
+        if current_time < self.blind_path_cooldown_time:
+            # 冷却期内，不检测
+            pass
+        elif blind_path_mask is not None and np.sum(blind_path_mask > 0) > 0:
+            # 计算盲道中心位置和面积
+            y_coords, x_coords = np.where(blind_path_mask > 0)
+            if len(y_coords) > 0:
+                center_x_ratio = np.mean(x_coords) / image_width
+                area_ratio = len(y_coords) / (image_height * image_width)
+
+                # 判断盲道是否在画面中间40%-60%宽度，且面积超过阈值
+                if (self.BLIND_PATH_CENTER_MIN_RATIO <= center_x_ratio <= self.BLIND_PATH_CENTER_MAX_RATIO
+                        and area_ratio >= self.BLIND_PATH_AREA_THRESHOLD):
+                    self.blind_path_visible_frames += 1
+
+                    # 【调试】每30帧打印一次状态
+                    if self.blind_path_visible_frames % 30 == 0:
+                        logger.info(f"[盲道连续可见] 计数={self.blind_path_visible_frames}/{self.BLIND_PATH_VISIBLE_THRESHOLD_FRAMES}, "
+                                   f"center_x_ratio={center_x_ratio:.2f}, area_ratio={area_ratio:.2%}")
+
+                    # 检查是否达到播报阈值（150帧，约5秒@30fps）
+                    if self.blind_path_visible_frames >= self.BLIND_PATH_VISIBLE_THRESHOLD_FRAMES:
+                        # 根据 center_x_ratio 判断左/中/右
+                        if center_x_ratio < 0.45:
+                            voice_text = "盲道在左侧"
+                        elif center_x_ratio > 0.55:
+                            voice_text = "盲道在右侧"
+                        else:
+                            voice_text = "盲道在中间"
+
+                        self.pending_blind_path_voice = voice_text
+                        self.blind_path_cooldown_time = current_time + self.BLIND_PATH_COOLDOWN_SECONDS
+                        self.blind_path_visible_frames = 0  # 重置计数
+
+                        logger.info(f"[盲道连续可见] 播报: {voice_text}, center_x_ratio={center_x_ratio:.2f}")
+                else:
+                    # 不在中间区域或面积不足，重置计数
+                    if self.blind_path_visible_frames > 0:
+                        logger.info(f"[盲道连续可见] 重置计数: center_x_ratio={center_x_ratio:.2f} (超出中间区域), "
+                                   f"area_ratio={area_ratio:.2%}")
+                    self.blind_path_visible_frames = 0
+            else:
+                self.blind_path_visible_frames = 0
+        else:
+            # 无盲道，重置计数
+            if self.blind_path_visible_frames > 0:
+                logger.info(f"[盲道连续可见] 重置计数: 无盲道")
+            self.blind_path_visible_frames = 0
+
+        # 3. 【禁用掩码稳定化和光流外推】直接使用实时检测结果
         # 不再使用光流外推，完全实时更新：有就是有，没有就是没有
         # blind_path_mask 和 crosswalk_mask 直接使用上面检测的结果
         crosswalk_mask_before_stabilize = crosswalk_mask
@@ -667,7 +731,17 @@ class BlindPathNavigator:
                     'source': 'crosswalk'
                 })
                 self.pending_crosswalk_voice = None  # 清除已处理的斑马线语音
-        
+
+        # 【新增】检查是否有盲道连续可见语音
+        if hasattr(self, 'pending_blind_path_voice'):
+            if self.pending_blind_path_voice:
+                voice_candidates.append({
+                    'text': self.pending_blind_path_voice,
+                    'priority': 80,  # 优先级：障碍物(100) > 盲道连续(80) > 斑马线(60-80) > 导航(50-60)
+                    'source': 'blind_path_continuous'
+                })
+                self.pending_blind_path_voice = None  # 清除已处理的盲道语音
+
         # 3. 选择优先级最高的语音
         if voice_candidates:
             # 按优先级排序，取最高的
@@ -3140,7 +3214,12 @@ class BlindPathNavigator:
         self.pending_obstacle_voice = None
         self.last_obstacle_speech = ""
         self.last_obstacle_speech_time = 0
-        
+
+        # 【新增】重置盲道连续播报相关
+        self.blind_path_visible_frames = 0
+        self.blind_path_cooldown_time = 0.0
+        self.pending_blind_path_voice = None
+
         # 重置多项式系数历史
         self.poly_coeffs_history = []
         self.crosswalk_tracker = {
