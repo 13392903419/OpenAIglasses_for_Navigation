@@ -151,7 +151,10 @@ AUDIO_FILES = {
     "向右": os.path.join(AUDIO_DIR, "向右.wav"),
     "向前": os.path.join(AUDIO_DIR, "向前.wav"),
     "后退": os.path.join(AUDIO_DIR, "向后.wav"),
-    "OK": os.path.join(AUDIO_DIR, "已对中.wav"),  # 添加OK音效
+    "OK": os.path.join(AUDIO_DIR, "已对中.wav"),
+    # 【新增】物品检测和抓取相关音频
+    "找到啦": os.path.join(AUDIO_DIR, "找到啦.wav"),
+    "拿到啦": os.path.join(AUDIO_DIR, "拿到啦.wav"),
 }
 GUIDANCE_INTERVAL_SEC = 1.5  # 引导播报间隔
 
@@ -770,6 +773,11 @@ def main(headless: bool = False, prompt_name: str = None, stop_event=None):
     grasp_movement_threshold = 10  # 最小移动像素阈值（提高阈值）
     grasp_detected = False  # 是否已经检测到抓取
     grasp_start_time = None  # 开始检测到协同移动的时间
+
+    # 【新增】抓取成功语音播报相关变量
+    grasp_success_announced = False  # 是否已经播报过成功语音
+    grasp_success_announce_time = 0  # 上次播报成功语音的时间
+    grasp_success_cooldown = 3.0  # 成功语音播报冷却时间（秒），避免重复播报
     
     # 背景参考点（用于检测相机移动） - 移到这里初始化
     background_points = None
@@ -1436,7 +1444,35 @@ def main(headless: bool = False, prompt_name: str = None, stop_event=None):
                                     grasp_now, grasp_score = detect_grasp(l0, W, H)
                                 else:
                                     grasp_now, grasp_score = False, 0.0
-             
+
+                                # 【新增】握持成功语音播报
+                                if grasp_now and grasp_score > 0.5:
+                                    # 检查是否需要播报（未播报过 或 冷却时间已过）
+                                    need_announce = (
+                                        not grasp_success_announced or
+                                        (t_now - grasp_success_announce_time) > grasp_success_cooldown
+                                    )
+                                    if need_announce:
+                                        # 检查手和物体是否接触
+                                        is_touching, overlap_ratio = check_hand_object_contact(hand_box, poly, overlap_threshold=0.1)
+                                        if is_touching:
+                                            # 播报成功语音：使用"拿到啦"音频
+                                            play_guidance_audio("拿到啦")
+                                            grasp_success_announced = True
+                                            grasp_success_announce_time = t_now
+                                            print(f"[GRASP] 握持成功（评分: {grasp_score:.2f}, 接触度: {overlap_ratio:.1%}）", flush=True)
+                                            # 推送 UI 消息
+                                            try:
+                                                bridge_io.send_ui_final("✓ 成功抓取！")
+                                            except Exception:
+                                                pass
+                                            # 在画面上显示成功消息
+                                            draw_text_cn(vis, "✓ 成功抓取！", (W//2 - 60, 100),
+                                                       font_size=24, color=FRONTEND_COLORS["ok"], stroke=(0, 0, 0))
+                                else:
+                                    # 握持状态未满足，重置播报标志
+                                    grasp_success_announced = False
+
                                 # guidance_msg 相关代码已经集成到上面的引导逻辑中
 
                                 # ===== 周边监控 & 重新锁定（复用YOLO结果）=====
