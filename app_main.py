@@ -440,25 +440,38 @@ async def start_ai_with_text_custom(user_text: str):
     """扩展版的AI启动函数，支持识别特殊命令"""
     global navigation_active, blind_path_navigator, cross_street_active, cross_street_navigator, orchestrator, current_asr_callback, yolomedia_running, yolomedia_stop_event, yolomedia_thread, yolomedia_sending_frames
     
-    # 【修改】在导航模式和红绿灯检测模式下，只有特定词才进入omni对话
+    # 【修改】在导航模式和红绿灯检测模式下，先检查控制命令，再处理对话
     if orchestrator:
         current_state = orchestrator.get_state()
         # 如果在导航模式或红绿灯检测模式（非CHAT模式）
         if current_state not in ["CHAT", "IDLE"]:
-            # 检查是否是允许的对话触发词
+            # 【优先】检查是否是停止/退出命令（这些命令在任何导航状态下都应该有效）
+            stop_keywords = ["停止", "结束", "退出", "取消"]
+            is_stop_cmd = any(keyword in user_text for keyword in stop_keywords)
+
+            # 【其次】检查是否是导航模式下的对话请求
             allowed_keywords = ["帮我看", "帮我看下", "帮我找", "找一下", "看看", "识别一下"]
             is_allowed_query = any(keyword in user_text for keyword in allowed_keywords)
-            
-            # 检查是否是导航控制命令
-            nav_control_keywords = ["开始过马路", "过马路结束", "启动导航", "开始导航", "盲道导航", "停止导航", "结束导航", 
+
+            # 【再者】检查是否是模式切换命令
+            nav_control_keywords = ["开始过马路", "过马路结束", "启动导航", "开始导航", "盲道导航",
                                    "导航到", "导航去", "检测红绿灯", "看红绿灯", "停止检测", "停止红绿灯"]
             is_nav_control = any(keyword in user_text for keyword in nav_control_keywords)
-            
-            # 如果既不是允许的查询，也不是导航控制命令，则丢弃
-            if not is_allowed_query and not is_nav_control:
-                mode_name = "红绿灯检测" if current_state == "TRAFFIC_LIGHT_DETECTION" else "导航"
-                print(f"[{mode_name}模式] 丢弃非对话语音: {user_text}")
+
+            # 定义模式名称（用于日志）
+            mode_name = "红绿灯检测" if current_state == "TRAFFIC_LIGHT_DETECTION" else "导航"
+
+            # 只有在以下情况下才放行：
+            # 1. 是停止命令
+            # 2. 是允许的对话查询
+            # 3. 是导航模式切换命令
+            if not is_stop_cmd and not is_allowed_query and not is_nav_control:
+                print(f"[{mode_name}模式] 丢弃非命令语音: {user_text}")
                 return  # 直接丢弃，不进入omni
+
+            # 【新增】如果是停止命令，给用户反馈
+            if is_stop_cmd:
+                print(f"[{mode_name}模式] 收到停止命令，正在处理: {user_text}")
     
     # 【修改】检查是否是过马路相关命令 - 使用orchestrator控制
     if "开始过马路" in user_text or "帮我过马路" in user_text:
@@ -483,10 +496,13 @@ async def start_ai_with_text_custom(user_text: str):
             await ui_broadcast_final("[系统] 导航系统未就绪")
         return
     
-    if "过马路结束" in user_text or "结束过马路" in user_text:
+    # 【修改】支持通用的"停止"、"结束"命令
+    if ("过马路结束" in user_text or "结束过马路" in user_text or
+        (orchestrator and orchestrator.get_state() == "CROSSING" and
+         ("停止" in user_text or "结束" in user_text))):
         if orchestrator:
             orchestrator.stop_navigation()
-            print(f"[CROSS_STREET] 导航已停止，状态: {orchestrator.get_state()}")
+            print(f"[CROSS_STREET] 过马路已停止，状态: {orchestrator.get_state()}")
             # 【新增】恢复到非导航模式时，重置唤醒词系统
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 from asr_core import WAKE_WORD_ENABLED
@@ -494,7 +510,7 @@ async def start_ai_with_text_custom(user_text: str):
                     current_asr_callback._system_active = False
                     print(f"[AUDIO] 过马路已停止，ASR系统已重置", flush=True)
             # 播放停止语音并广播到UI
-            play_voice_text("已停止导航。")
+            play_voice_text("已停止过马路。")
             await ui_broadcast_final("[系统] 过马路模式已停止，说'小慧启动'重新激活")
         else:
             await ui_broadcast_final("[系统] 导航系统未运行")
@@ -523,13 +539,16 @@ async def start_ai_with_text_custom(user_text: str):
             await ui_broadcast_final(f"[系统] 启动失败: {e}")
         return
     
-    if "停止检测" in user_text or "停止红绿灯" in user_text:
+    # 【修改】支持通用的"停止"、"结束"命令
+    if ("停止检测" in user_text or "停止红绿灯" in user_text or
+        (orchestrator and orchestrator.get_state() == "TRAFFIC_LIGHT_DETECTION" and
+         ("停止" in user_text or "结束" in user_text))):
         try:
             # 恢复到对话模式
             if orchestrator:
                 orchestrator.stop_navigation()  # 回到CHAT模式
                 print(f"[TRAFFIC] 红绿灯检测停止，恢复到{orchestrator.get_state()}模式")
-            
+
             await ui_broadcast_final("[系统] 红绿灯检测已停止")
         except Exception as e:
             print(f"[TRAFFIC] 停止红绿灯检测失败: {e}")
@@ -578,17 +597,22 @@ async def start_ai_with_text_custom(user_text: str):
             await ui_broadcast_final("[系统] 导航系统未就绪")
         return
     
-    if "停止导航" in user_text or "结束导航" in user_text:
+    # 【修改】支持通用的"停止"、"结束"命令
+    if ("停止导航" in user_text or "结束导航" in user_text or
+        (orchestrator and orchestrator.get_state() not in ["CHAT", "IDLE", "ITEM_SEARCH"] and
+         ("停止" in user_text or "结束" in user_text))):
         if orchestrator:
+            current_state = orchestrator.get_state()
             orchestrator.stop_navigation()
-            print(f"[NAVIGATION] 导航已停止，状态: {orchestrator.get_state()}")
+            print(f"[NAVIGATION] 导航已停止（状态: {current_state}）, 新状态: {orchestrator.get_state()}")
             # 【新增】恢复到非导航模式时，重置唤醒词系统
             if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
                 from asr_core import WAKE_WORD_ENABLED
                 if WAKE_WORD_ENABLED:
                     current_asr_callback._system_active = False
                     print(f"[AUDIO] 导航已停止，ASR系统已重置", flush=True)
-            await ui_broadcast_final("[系统] 盲道导航已停止，说'小慧启动'重新激活")
+            play_voice_text("已停止导航。")
+            await ui_broadcast_final("[系统] 导航已停止，说'小慧启动'重新激活")
         else:
             await ui_broadcast_final("[系统] 导航系统未运行")
         return
