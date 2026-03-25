@@ -1157,6 +1157,10 @@ async def ws_camera_esp(ws: WebSocket):
                         if frame_counter % 100 == 0:
                             print(f"[NAV MASTER] 处理帧时出错: {e}")
 
+                    # 【优化】让出事件循环控制权，防止阻塞其他协程（如ASR音频流处理）
+                    # 在密集的图像处理后主动yield，确保音频流和其他异步任务有机会执行
+                    await asyncio.sleep(0)
+
                     # 如果生成了叠加图，就把叠加图再发一次（原始帧已经发过）
                     if camera_viewers and out_img is not None and out_img is not bgr:
                         ok, enc = cv2.imencode(".jpg", out_img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
