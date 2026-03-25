@@ -53,10 +53,29 @@ def _extract_sentence(event_obj: Any) -> Tuple[Optional[str], Optional[bool]]:
             return obj.get("text"), None
     return None, None
 
-# ====== 仅热词触发的“全清零复位”配置 ======
+# ====== 仅热词触发的全清零复位配置 ======
 INTERRUPT_KEYWORDS = set(
     os.getenv("INTERRUPT_KEYWORDS", "停下,别说了,停止").split(",")
 )
+
+# ====== 停止命令配置（用于中断导航等单方输出模式）======
+STOP_COMMANDS = set(
+    os.getenv("STOP_COMMANDS", "停止,结束,退出,取消,关闭,暂停").split(",")
+)
+
+def _has_stopword(text: str) -> bool:
+    """检测文本是否包含停止命令"""
+    t = _normalize_cn(text)
+    if not t:
+        return False
+    for w in STOP_COMMANDS:
+        if w and _normalize_cn(w) in t:
+            return True
+    return False
+    for w in STOP_COMMANDS:
+        if w and _normalize_cn(w) in t:
+            return True
+    return False
 
 def _normalize_cn(s: str) -> str:
     try:
@@ -279,15 +298,29 @@ class ASRCallback:
             except Exception:
                 pass
 
-            if (not self._is_playing()) and final_text:
-                async def _run_final():
-                    async with self._interrupt_lock:
-                        print(f"[LLM INPUT TEXT] {final_text}", flush=True)
-                        await self._start_ai(final_text)
-                try:
-                    self._post(_run_final())
-                except Exception:
-                    pass
+        # 【修复】停止命令例外处理：即使在播放音频，停止命令也要立即响应
+        # 这解决了导航模式下播放TTS时无法识别"停止"命令的问题
+        if final_text and _has_stopword(final_text):
+            async def _handle_stop():
+                async with self._interrupt_lock:
+                    print(f"[ASR STOP] 检测到停止命令，中断当前播放: '{final_text}'", flush=True)
+                    # 1. 先中断当前播放（包括TTS和AI任务）
+                    await self._full_reset("ASR stop command")
+                    # 2. 再处理停止命令（发送给 start_ai_with_text_custom）
+                    await self._start_ai(final_text)
+            try:
+                self._post(_handle_stop())
+            except Exception:
+                pass
+        elif (not self._is_playing()) and final_text:
+            async def _run_final():
+                async with self._interrupt_lock:
+                    print(f"[LLM INPUT TEXT] {final_text}", flush=True)
+                    await self._start_ai(final_text)
+            try:
+                self._post(_run_final())
+            except Exception:
+                pass
 
             # 复位进入下一句
             self._last_partial_for_ui = ""
