@@ -444,26 +444,32 @@ async def start_ai_with_text_custom(user_text: str):
     if orchestrator:
         current_state = orchestrator.get_state()
         # 如果在导航模式或红绿灯检测模式（非CHAT模式）
-        if current_state not in ["CHAT", "IDLE"]:
+        if current_state not in ["CHAT", "IDLE", "ITEM_SEARCH"]:
             # 【优先】检查是否是停止/退出命令（这些命令在任何导航状态下都应该有效）
             stop_keywords = ["停止", "结束", "退出", "取消"]
             is_stop_cmd = any(keyword in user_text for keyword in stop_keywords)
 
-            # 【其次】检查是否是导航模式下的对话请求
-            allowed_keywords = ["帮我看", "帮我看下", "帮我找", "找一下", "看看", "识别一下"]
-            is_allowed_query = any(keyword in user_text for keyword in allowed_keywords)
+            # 【修改】严格的导航模式查询控制：只允许精确匹配"帮我看XX"的查询
+            # 不再模糊匹配"帮我找"，避免误将物品查找请求当作对话查询
+            allowed_query_patterns = [
+                r"帮我看一下?",
+                r"帮我看下",
+                r"看看\s*",
+                r"识别一下?",
+            ]
+            is_allowed_query = any(re.search(pattern, user_text) for pattern in allowed_query_patterns)
 
-            # 【再者】检查是否是模式切换命令
-            nav_control_keywords = ["开始过马路", "过马路结束", "启动导航", "开始导航", "盲道导航",
-                                   "导航到", "导航去", "检测红绿灯", "看红绿灯", "停止检测", "停止红绿灯"]
+            # 【再者】检查是否是模式切换命令（移除"启动导航"等）
+            nav_control_keywords = ["开始过马路", "过马路结束",
+                                   "检测红绿灯", "看红绿灯", "停止检测", "停止红绿灯"]
             is_nav_control = any(keyword in user_text for keyword in nav_control_keywords)
 
             # 定义模式名称（用于日志）
             mode_name = "红绿灯检测" if current_state == "TRAFFIC_LIGHT_DETECTION" else "导航"
 
             # 只有在以下情况下才放行：
-            # 1. 是停止命令
-            # 2. 是允许的对话查询
+            # 1. 是停止命令（最高优先级）
+            # 2. 是精确匹配的对话查询（"帮我看XX"）
             # 3. 是导航模式切换命令
             if not is_stop_cmd and not is_allowed_query and not is_nav_control:
                 print(f"[{mode_name}模式] 丢弃非命令语音: {user_text}")
@@ -577,25 +583,12 @@ async def start_ai_with_text_custom(user_text: str):
                 await ui_broadcast_final("[系统] 导航系统未就绪")
             return
 
-    # 【修改】检查是否是导航相关命令 - 使用orchestrator控制（含「启动导航」）
-    if "启动导航" in user_text or "开始导航" in user_text or "盲道导航" in user_text or "帮我导航" in user_text:
-        # 【新增】如果正在找物品，先停止
-        if yolomedia_running:
-            stop_yolomedia()
-            print("[ITEM_SEARCH] 从找物品模式切换到盲道导航")
-        
-        if orchestrator:
-            orchestrator.start_blind_path_navigation()
-            print(f"[NAVIGATION] 盲道导航已启动，状态: {orchestrator.get_state()}")
-            # 【新增】在导航模式激活系统，跳过唤醒词
-            if current_asr_callback and hasattr(current_asr_callback, '_system_active'):
-                current_asr_callback._system_active = True
-                print(f"[AUDIO] 导航模式已激活ASR系统，用户可直接说停止导航", flush=True)
-            play_voice_text("盲道导航已启动，说停止导航可结束。")
-        else:
-            print("[NAVIGATION] 警告：导航统领器未初始化！")
-            await ui_broadcast_final("[系统] 导航系统未就绪")
-        return
+    # 【移除】直接启动导航的命令 - 已按Sofia要求禁用
+    # 现在只能通过"导航到XX"或"导航去XX"来启动导航
+    # 原命令：启动导航、开始导航、盲道导航、帮我导航
+    # if "启动导航" in user_text or "开始导航" in user_text or "盲道导航" in user_text or "帮我导航" in user_text:
+    #     # ...（原代码已注释）
+    #     return
     
     # 【修改】支持通用的"停止"、"结束"命令
     if ("停止导航" in user_text or "结束导航" in user_text or
@@ -617,7 +610,9 @@ async def start_ai_with_text_custom(user_text: str):
             await ui_broadcast_final("[系统] 导航系统未运行")
         return
 
-    nav_cmd_keywords = ["开始过马路", "过马路结束", "启动导航", "开始导航", "盲道导航", "停止导航", "结束导航", "立即通过", "现在通过", "继续"]
+    # 【修改】导航控制命令列表 - 移除已禁用的"启动导航"等命令
+    # 保留：过马路控制、过马路中的导航命令（立即通过、现在通过、继续）
+    nav_cmd_keywords = ["开始过马路", "过马路结束", "立即通过", "现在通过", "继续"]
     if any(k in user_text for k in nav_cmd_keywords):
         if orchestrator:
             orchestrator.on_voice_command(user_text)
@@ -627,9 +622,19 @@ async def start_ai_with_text_custom(user_text: str):
         return    
 
     # 检查是否是"帮我找/识别一下xxx"的命令
-    # 扩展正则表达式，支持更多关键词
-    find_pattern = r"(?:^\s*帮我)?\s*找一下\s*(.+?)(?:。|！|？|$)"
-    match = re.search(find_pattern, user_text)
+    # 【修改】支持多种表达方式：找XX、帮我找XX、找到XX、帮我找到XX
+    # 使用更灵活的正则表达式，匹配"找"+"物品名"的模式
+    find_patterns = [
+        r"(?:^\s*帮我)?\s*找一下\s*(.+?)(?:。|！|？|$)",  # 原有：找一下XX
+        r"(?:^\s*帮我)?\s*找到\s*(.+?)(?:。|！|？|$)",    # 新增：找到XX
+        r"(?:^\s*帮我)?\s*找\s*(.+?)(?:。|！|？|$)",      # 新增：找XX
+    ]
+
+    match = None
+    for pattern in find_patterns:
+        match = re.search(pattern, user_text)
+        if match:
+            break
         
     if match:
         # 提取中文物品名称
